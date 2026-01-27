@@ -27,8 +27,62 @@ DEFAULT_PRESET = {
     'contrast': 1.0,
     'highlights': 0.0,
     'shadows': 0.0,
-    'manual_wb_multipliers': None,  # [R, G, B]
+    'temperature': 0.0,  # 色温：负数偏冷(蓝)，正数偏暖(黄)，范围 [-100, 100]
+    'tint': 0.0,  # 色调：负数偏绿，正数偏品红，范围 [-100, 100]
 }
+
+
+def temperature_tint_to_rgb(temperature, tint):
+    """
+    将色温和色调转换为RGB白平衡增益
+
+    Args:
+        temperature: 色温值，负数偏冷(蓝)，正数偏暖(黄)，范围 [-100, 100]
+        tint: 色调值，负数偏绿，正数偏品红，范围 [-100, 100]
+
+    Returns:
+        [R, G, B] 增益系数
+    """
+    # 色温调整：蓝色通道 <-> 黄色(R+G)
+    # temperature < 0: 增加蓝，减少红和绿
+    # temperature > 0: 减少蓝，增加红和绿
+
+    temp_factor = temperature / 100.0  # 归一化到 [-1, 1]
+
+    if temp_factor < 0:
+        # 偏冷：增加蓝色
+        blue_gain = 1.0 + abs(temp_factor) * 0.5
+        red_gain = 1.0 - abs(temp_factor) * 0.3
+        green_gain = 1.0 - abs(temp_factor) * 0.2
+    else:
+        # 偏暖：增加红色和绿色
+        blue_gain = 1.0 - temp_factor * 0.4
+        red_gain = 1.0 + temp_factor * 0.4
+        green_gain = 1.0 + temp_factor * 0.2
+
+    # 色调调整：绿色 <-> 品红(R+B)
+    # tint < 0: 增加绿色
+    # tint > 0: 增加品红(红+蓝)
+
+    tint_factor = tint / 100.0  # 归一化到 [-1, 1]
+
+    if tint_factor < 0:
+        # 偏绿
+        green_gain = green_gain * (1.0 + abs(tint_factor) * 0.3)
+        red_gain = red_gain * (1.0 - abs(tint_factor) * 0.2)
+        blue_gain = blue_gain * (1.0 - abs(tint_factor) * 0.2)
+    else:
+        # 偏品红
+        red_gain = red_gain * (1.0 + tint_factor * 0.2)
+        blue_gain = blue_gain * (1.0 + tint_factor * 0.2)
+        green_gain = green_gain * (1.0 - tint_factor * 0.3)
+
+    # 限制增益范围
+    red_gain = max(0.5, min(2.0, red_gain))
+    green_gain = max(0.5, min(2.0, green_gain))
+    blue_gain = max(0.5, min(2.0, blue_gain))
+
+    return [red_gain, green_gain, blue_gain]
 
 
 def save_preset(filepath, params):
@@ -145,19 +199,27 @@ def apply_highlights_shadows(image, highlights=0.0, shadows=0.0):
     return np.clip(result, 0.0, 1.0)
 
 
-def apply_manual_white_balance(image, multipliers):
+def apply_manual_white_balance(image, temperature=0.0, tint=0.0):
     """
-    应用手动白平衡（直接指定RGB增益）
+    应用手动白平衡（使用色温和色调）
 
     Args:
         image: 输入图像 (H, W, 3)
-        multipliers: RGB增益列表 [R, G, B]
+        temperature: 色温值，负数偏冷(蓝)，正数偏暖(黄)
+        tint: 色调值，负数偏绿，正数偏品红
 
     Returns:
         调整后的图像
     """
-    if multipliers is None or len(multipliers) != 3:
+    if temperature == 0.0 and tint == 0.0:
         return image
+
+    # 转换为RGB增益
+    multipliers = temperature_tint_to_rgb(temperature, tint)
+
+    print(f"  色温调整: {temperature:+.1f} (冷←→暖)")
+    print(f"  色调调整: {tint:+.1f} (绿←→品红)")
+    print(f"  RGB增益: R={multipliers[0]:.3f}, G={multipliers[1]:.3f}, B={multipliers[2]:.3f}")
 
     result = image.copy()
     for c in range(3):
@@ -441,8 +503,9 @@ def extract_roi(image, roi_config='center'):
 def process_nef_file(input_path, output_path, ratio=0.01, use_camera_wb=False,
                      roi='center', show_roi=False, white_balance='none',
                      wb_roi=None, exposure=0.0, brightness=0.0, contrast=1.0,
-                     highlights=0.0, shadows=0.0, manual_wb_multipliers=None,
-                     save_preset_path=None, load_preset_path=None):
+                     highlights=0.0, shadows=0.0, temperature=0.0, tint=0.0,
+                     save_preset_path=None, load_preset_path=None,
+                     relative_adjust=False):
     """
     处理Nikon NEF文件
 
@@ -460,26 +523,49 @@ def process_nef_file(input_path, output_path, ratio=0.01, use_camera_wb=False,
         contrast: 对比度调整 [0, 3+]
         highlights: 高光调整 [-100, 100]
         shadows: 阴影调整 [-100, 100]
-        manual_wb_multipliers: 手动白平衡RGB增益 [R, G, B]
+        temperature: 色温调整 [-100, 100]，负数偏冷，正数偏暖
+        tint: 色调调整 [-100, 100]，负数偏绿，正数偏品红
         save_preset_path: 保存预设到文件
         load_preset_path: 从文件加载预设
+        relative_adjust: 是否使用相对值调整（在预设基础上微调）
     """
     # 如果指定了预设文件，先加载预设
     if load_preset_path:
         print(f"\n加载预设: {load_preset_path}")
         preset = load_preset(load_preset_path)
-        # 更新参数（命令行参数优先级更高）
-        if ratio == DEFAULT_PRESET['ratio']: ratio = preset.get('ratio', ratio)
-        if use_camera_wb == DEFAULT_PRESET['use_camera_wb']: use_camera_wb = preset.get('use_camera_wb', use_camera_wb)
-        if roi == DEFAULT_PRESET['roi']: roi = preset.get('roi', roi)
-        if white_balance == DEFAULT_PRESET['white_balance']: white_balance = preset.get('white_balance', white_balance)
-        if wb_roi == DEFAULT_PRESET['wb_roi']: wb_roi = preset.get('wb_roi', wb_roi)
-        if exposure == DEFAULT_PRESET['exposure']: exposure = preset.get('exposure', exposure)
-        if brightness == DEFAULT_PRESET['brightness']: brightness = preset.get('brightness', brightness)
-        if contrast == DEFAULT_PRESET['contrast']: contrast = preset.get('contrast', contrast)
-        if highlights == DEFAULT_PRESET['highlights']: highlights = preset.get('highlights', highlights)
-        if shadows == DEFAULT_PRESET['shadows']: shadows = preset.get('shadows', shadows)
-        if manual_wb_multipliers == DEFAULT_PRESET['manual_wb_multipliers']: manual_wb_multipliers = preset.get('manual_wb_multipliers', manual_wb_multipliers)
+
+        # 更新参数
+        if relative_adjust:
+            # 相对值调整：命令行参数作为增量叠加到预设值
+            print("使用相对值调整模式")
+            ratio = preset.get('ratio', ratio)
+            use_camera_wb = preset.get('use_camera_wb', use_camera_wb)
+            roi = preset.get('roi', roi)
+            white_balance = preset.get('white_balance', white_balance)
+            wb_roi = preset.get('wb_roi', wb_roi)
+            exposure = preset.get('exposure', 0.0) + exposure
+            brightness = preset.get('brightness', 0.0) + brightness
+            contrast = preset.get('contrast', 1.0) + (contrast - 1.0)
+            highlights = preset.get('highlights', 0.0) + highlights
+            shadows = preset.get('shadows', 0.0) + shadows
+            temperature = preset.get('temperature', 0.0) + temperature
+            tint = preset.get('tint', 0.0) + tint
+            print(f"在预设基础上微调")
+        else:
+            # 绝对值调整：命令行参数覆盖预设值（仅当使用默认值时）
+            if ratio == DEFAULT_PRESET['ratio']: ratio = preset.get('ratio', ratio)
+            if use_camera_wb == DEFAULT_PRESET['use_camera_wb']: use_camera_wb = preset.get('use_camera_wb', use_camera_wb)
+            if roi == DEFAULT_PRESET['roi']: roi = preset.get('roi', roi)
+            if white_balance == DEFAULT_PRESET['white_balance']: white_balance = preset.get('white_balance', white_balance)
+            if wb_roi == DEFAULT_PRESET['wb_roi']: wb_roi = preset.get('wb_roi', wb_roi)
+            if exposure == DEFAULT_PRESET['exposure']: exposure = preset.get('exposure', exposure)
+            if brightness == DEFAULT_PRESET['brightness']: brightness = preset.get('brightness', brightness)
+            if contrast == DEFAULT_PRESET['contrast']: contrast = preset.get('contrast', contrast)
+            if highlights == DEFAULT_PRESET['highlights']: highlights = preset.get('highlights', highlights)
+            if shadows == DEFAULT_PRESET['shadows']: shadows = preset.get('shadows', shadows)
+            if temperature == DEFAULT_PRESET['temperature']: temperature = preset.get('temperature', temperature)
+            if tint == DEFAULT_PRESET['tint']: tint = preset.get('tint', tint)
+
         print(f"预设参数已加载")
 
     print(f"\n处理文件: {input_path}")
@@ -488,7 +574,8 @@ def process_nef_file(input_path, output_path, ratio=0.01, use_camera_wb=False,
     print(f"使用相机白平衡: {use_camera_wb}")
     print(f"分析区域: {roi}")
     print(f"白平衡方法: {white_balance}")
-    print(f"曝光调整: {exposure:+.2f} EV")
+    if exposure != 0:
+        print(f"曝光调整: {exposure:+.2f} EV")
     if brightness != 0:
         print(f"亮度调整: {brightness:+.2f}")
     if contrast != 1.0:
@@ -497,8 +584,10 @@ def process_nef_file(input_path, output_path, ratio=0.01, use_camera_wb=False,
         print(f"高光调整: {highlights:+.1f}")
     if shadows != 0:
         print(f"阴影调整: {shadows:+.1f}")
-    if manual_wb_multipliers:
-        print(f"手动白平衡: R={manual_wb_multipliers[0]:.3f}, G={manual_wb_multipliers[1]:.3f}, B={manual_wb_multipliers[2]:.3f}")
+    if temperature != 0:
+        print(f"色温调整: {temperature:+.1f}")
+    if tint != 0:
+        print(f"色调调整: {tint:+.1f}")
 
     # 读取RAW文件
     with rawpy.imread(input_path) as raw:
@@ -572,10 +661,10 @@ def process_nef_file(input_path, output_path, ratio=0.01, use_camera_wb=False,
             wb_analysis_roi = wb_roi if wb_roi is not None else roi
             result = apply_white_balance(result, method=white_balance, roi=wb_analysis_roi)
 
-        # 应用手动白平衡（如果指定）
-        if manual_wb_multipliers:
+        # 应用手动白平衡（如果指定了temperature或tint）
+        if temperature != 0.0 or tint != 0.0:
             print(f"\n应用手动白平衡...")
-            result = apply_manual_white_balance(result, manual_wb_multipliers)
+            result = apply_manual_white_balance(result, temperature, tint)
 
         # 应用曝光调整
         if exposure != 0:
@@ -609,7 +698,8 @@ def process_nef_file(input_path, output_path, ratio=0.01, use_camera_wb=False,
                 'contrast': contrast,
                 'highlights': highlights,
                 'shadows': shadows,
-                'manual_wb_multipliers': manual_wb_multipliers,
+                'temperature': temperature,
+                'tint': tint,
             }
             save_preset(save_preset_path, preset_params)
 
@@ -651,37 +741,34 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 示例:
-    # 基本使用（使用中心80%区域分析）
+    # 基本使用
     python remove_color_cast.py input.NEF output.jpg
+
+    # 色温调整（正数偏暖，负数偏冷）
+    python remove_color_cast.py input.NEF output.jpg --temperature +20
+
+    # 色调调整（正数偏品红，负数偏绿）
+    python remove_color_cast.py input.NEF output.jpg --tint -10
 
     # 曝光调整
     python remove_color_cast.py input.NEF output.jpg --exposure +0.5
 
-    # 亮度和对比度调整
-    python remove_color_cast.py input.NEF output.jpg --brightness 0.1 --contrast 1.2
-
-    # 高光和阴影调整
-    python remove_color_cast.py input.NEF output.jpg --highlights -20 --shadows +30
-
-    # 手动白平衡（指定RGB增益）
-    python remove_color_cast.py input.NEF output.jpg --manual-wb 1.2,1.0,0.9
-
-    # 应用自动白平衡
-    python remove_color_cast.py input.NEF output.jpg --white-balance auto
-
     # 保存预设
-    python remove_color_cast.py input.NEF output.jpg --exposure +0.5 --contrast 1.2 --save-preset my_settings.json
+    python remove_color_cast.py input.NEF output.jpg --exposure +0.3 --temperature +10 --save-preset my_settings.json
 
-    # 使用预设
+    # 使用预设（绝对值模式，命令行参数覆盖预设）
     python remove_color_cast.py input.NEF output.jpg --load-preset my_settings.json
+
+    # 使用预设并微调（相对值模式）
+    python remove_color_cast.py input.NEF output.jpg --load-preset my_settings.json --relative-adjust --temperature +5 --exposure +0.1
 
     # 完整示例
     python remove_color_cast.py input.NEF output.jpg \\
         --roi center-60 \\
         --exposure +0.3 \\
         --contrast 1.1 \\
-        --shadows +20 \\
-        --white-balance gray-world \\
+        --temperature +15 \\
+        --tint -5 \\
         --save-preset negative_film.json
         '''
     )
@@ -724,11 +811,21 @@ def main():
         default=None,
         help='白平衡分析区域 (默认: 与色罩ROI相同)'
     )
+
+    # 色温和色调调整（手动白平衡）
     parser.add_argument(
-        '--manual-wb',
-        metavar='R,G,B',
-        default=None,
-        help='手动白平衡RGB增益 (例如: 1.2,1.0,0.9)'
+        '--temperature',
+        type=float,
+        default=0.0,
+        metavar='VAL',
+        help='色温调整，范围 [-100, 100]。负数偏冷(蓝)，正数偏暖(黄)'
+    )
+    parser.add_argument(
+        '--tint',
+        type=float,
+        default=0.0,
+        metavar='VAL',
+        help='色调调整，范围 [-100, 100]。负数偏绿，正数偏品红'
     )
 
     # 亮度调整参数
@@ -783,6 +880,11 @@ def main():
         default=None,
         help='从预设文件加载设置'
     )
+    parser.add_argument(
+        '--relative-adjust',
+        action='store_true',
+        help='使用相对值调整模式（在预设基础上微调，需要配合--load-preset使用）'
+    )
 
     args = parser.parse_args()
 
@@ -809,17 +911,9 @@ def main():
         except ValueError:
             pass
 
-    # 解析手动白平衡参数
-    manual_wb_multipliers = None
-    if args.manual_wb:
-        try:
-            manual_wb_multipliers = [float(x.strip()) for x in args.manual_wb.split(',')]
-            if len(manual_wb_multipliers) != 3:
-                raise ValueError("需要3个值")
-            print(f"手动白平衡: R={manual_wb_multipliers[0]}, G={manual_wb_multipliers[1]}, B={manual_wb_multipliers[2]}")
-        except ValueError as e:
-            print(f"错误: 手动白平衡参数格式不正确: {e}")
-            return 1
+    # 检查相对值调整模式
+    if args.relative_adjust and not args.load_preset:
+        print("警告: --relative-adjust 需要配合 --load-preset 使用，将忽略此选项")
 
     # 检查输入文件是否存在
     if not Path(args.input).exists():
@@ -842,9 +936,11 @@ def main():
             contrast=args.contrast,
             highlights=args.highlights,
             shadows=args.shadows,
-            manual_wb_multipliers=manual_wb_multipliers,
+            temperature=args.temperature,
+            tint=args.tint,
             save_preset_path=args.save_preset,
-            load_preset_path=args.load_preset
+            load_preset_path=args.load_preset,
+            relative_adjust=args.relative_adjust
         )
         return 0
     except Exception as e:
