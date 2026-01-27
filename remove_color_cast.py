@@ -14,6 +14,16 @@ import rawpy
 import cv2
 from pathlib import Path
 
+# 尝试导入 CuPy 用于 GPU 加速
+try:
+    import cupy as cp
+    GPU_AVAILABLE = True
+    print("GPU 加速可用 (CuPy 已检测到)")
+except ImportError:
+    GPU_AVAILABLE = False
+    cp = None
+    print("注意: CuPy 未安装，将使用 CPU 处理")
+
 
 # 默认预设配置
 DEFAULT_PRESET = {
@@ -29,7 +39,54 @@ DEFAULT_PRESET = {
     'shadows': 0.0,
     'temperature': 0.0,  # 色温：负数偏冷(蓝)，正数偏暖(黄)，范围 [-100, 100]
     'tint': 0.0,  # 色调：负数偏绿，正数偏品红，范围 [-100, 100]
+    'use_gpu': True,  # 是否使用 GPU 加速
 }
+
+
+def get_array_module(use_gpu=True):
+    """
+    根据配置返回合适的数组模块（NumPy 或 CuPy）
+
+    Args:
+        use_gpu: 是否尝试使用 GPU
+
+    Returns:
+        数组模块（numpy 或 cupy）
+    """
+    if use_gpu and GPU_AVAILABLE:
+        return cp
+    return np
+
+
+def to_device(array, use_gpu=True):
+    """
+    将数组转移到指定设备（GPU 或 CPU）
+
+    Args:
+        array: 输入数组
+        use_gpu: 是否转移到 GPU
+
+    Returns:
+        设备上的数组
+    """
+    if use_gpu and GPU_AVAILABLE:
+        return cp.asarray(array)
+    return array
+
+
+def to_host(array):
+    """
+    将数组从 GPU 转移回 CPU
+
+    Args:
+        array: 输入数组（可能在 GPU 上）
+
+    Returns:
+        CPU 上的 NumPy 数组
+    """
+    if GPU_AVAILABLE and isinstance(array, cp.ndarray):
+        return cp.asnumpy(array)
+    return array
 
 
 def temperature_tint_to_rgb(temperature, tint):
@@ -116,13 +173,14 @@ def load_preset(filepath):
     return preset
 
 
-def apply_exposure(image, ev):
+def apply_exposure(image, ev, use_gpu=True):
     """
     应用曝光调整
 
     Args:
         image: 输入图像 (H, W, 3)
         ev: 曝光值（EV），正数增加曝光，负数减少曝光
+        use_gpu: 是否使用 GPU 加速
 
     Returns:
         调整后的图像
@@ -130,12 +188,13 @@ def apply_exposure(image, ev):
     if ev == 0:
         return image
 
+    xp = get_array_module(use_gpu)
     factor = 2.0 ** ev
-    result = np.clip(image * factor, 0.0, 1.0)
+    result = xp.clip(image * factor, 0.0, 1.0)
     return result
 
 
-def apply_brightness_contrast(image, brightness=0.0, contrast=1.0):
+def apply_brightness_contrast(image, brightness=0.0, contrast=1.0, use_gpu=True):
     """
     应用亮度和对比度调整
 
@@ -143,12 +202,15 @@ def apply_brightness_contrast(image, brightness=0.0, contrast=1.0):
         image: 输入图像 (H, W, 3)
         brightness: 亮度调整，范围 [-1, 1]，0为不调整
         contrast: 对比度调整，范围 [0, 3+]，1为不调整
+        use_gpu: 是否使用 GPU 加速
 
     Returns:
         调整后的图像
     """
     if brightness == 0 and contrast == 1.0:
         return image
+
+    xp = get_array_module(use_gpu)
 
     # 应用对比度
     if contrast != 1.0:
@@ -160,10 +222,10 @@ def apply_brightness_contrast(image, brightness=0.0, contrast=1.0):
     if brightness != 0:
         result = result + brightness
 
-    return np.clip(result, 0.0, 1.0)
+    return xp.clip(result, 0.0, 1.0)
 
 
-def apply_highlights_shadows(image, highlights=0.0, shadows=0.0):
+def apply_highlights_shadows(image, highlights=0.0, shadows=0.0, use_gpu=True):
     """
     应用高光和阴影调整
 
@@ -173,6 +235,7 @@ def apply_highlights_shadows(image, highlights=0.0, shadows=0.0):
                    负数降低高光，正数提亮高光
         shadows: 阴影调整，范围 [-100, 100]，0为不调整
                 负数压暗阴影，正数提亮阴影
+        use_gpu: 是否使用 GPU 加速
 
     Returns:
         调整后的图像
@@ -180,26 +243,27 @@ def apply_highlights_shadows(image, highlights=0.0, shadows=0.0):
     if highlights == 0 and shadows == 0:
         return image
 
+    xp = get_array_module(use_gpu)
     result = image.copy()
 
     # 高光调整
     if highlights != 0:
         highlight_threshold = 0.6
-        highlight_mask = (image > highlight_threshold).astype(np.float32)
+        highlight_mask = (image > highlight_threshold).astype(xp.float32)
         highlight_adjustment = (image - highlight_threshold) * (highlights / 100.0)
         result = result + highlight_mask * highlight_adjustment
 
     # 阴影调整
     if shadows != 0:
         shadow_threshold = 0.4
-        shadow_mask = (image < shadow_threshold).astype(np.float32)
+        shadow_mask = (image < shadow_threshold).astype(xp.float32)
         shadow_adjustment = (shadow_threshold - image) * (shadows / 100.0) * shadow_mask
         result = result - shadow_adjustment
 
-    return np.clip(result, 0.0, 1.0)
+    return xp.clip(result, 0.0, 1.0)
 
 
-def apply_manual_white_balance(image, temperature=0.0, tint=0.0):
+def apply_manual_white_balance(image, temperature=0.0, tint=0.0, use_gpu=True):
     """
     应用手动白平衡（使用色温和色调）
 
@@ -207,12 +271,15 @@ def apply_manual_white_balance(image, temperature=0.0, tint=0.0):
         image: 输入图像 (H, W, 3)
         temperature: 色温值，负数偏冷(蓝)，正数偏暖(黄)
         tint: 色调值，负数偏绿，正数偏品红
+        use_gpu: 是否使用 GPU 加速
 
     Returns:
         调整后的图像
     """
     if temperature == 0.0 and tint == 0.0:
         return image
+
+    xp = get_array_module(use_gpu)
 
     # 转换为RGB增益
     multipliers = temperature_tint_to_rgb(temperature, tint)
@@ -223,12 +290,12 @@ def apply_manual_white_balance(image, temperature=0.0, tint=0.0):
 
     result = image.copy()
     for c in range(3):
-        result[:, :, c] = np.clip(result[:, :, c] * multipliers[c], 0.0, 1.0)
+        result[:, :, c] = xp.clip(result[:, :, c] * multipliers[c], 0.0, 1.0)
 
     return result
 
 
-def analyze_color_cast(image, ratio=0.01):
+def analyze_color_cast(image, ratio=0.01, use_gpu=True):
     """
     分析图像的色罩参数
 
@@ -237,10 +304,13 @@ def analyze_color_cast(image, ratio=0.01):
     Args:
         image: 输入的RGB图像 (H, W, 3)
         ratio: 色阶调整的超参数
+        use_gpu: 是否使用 GPU 加速
 
     Returns:
         (inverted, adjust_params): 反相后的图像和每个通道的调整参数
     """
+    xp = get_array_module(use_gpu)
+
     # 步骤1: 反相
     print("步骤1: 反相图像...")
     inverted = 1.0 - image
@@ -253,8 +323,8 @@ def analyze_color_cast(image, ratio=0.01):
 
     for c in range(3):
         channel = inverted[:, :, c]
-        current_min = channel.min()
-        current_max = channel.max()
+        current_min = float(xp.min(channel))
+        current_max = float(xp.max(channel))
 
         print(f"  通道{channel_names[c]}: 当前范围 [{current_min:.4f}, {current_max:.4f}]")
 
@@ -286,7 +356,7 @@ def analyze_color_cast(image, ratio=0.01):
     return inverted, adjust_params
 
 
-def apply_color_cast_adjustment(inverted, adjust_params):
+def apply_color_cast_adjustment(inverted, adjust_params, use_gpu=True):
     """
     应用色罩调整参数
 
@@ -295,12 +365,14 @@ def apply_color_cast_adjustment(inverted, adjust_params):
     Args:
         inverted: 反相后的图像
         adjust_params: 每个通道的调整参数
+        use_gpu: 是否使用 GPU 加速
 
     Returns:
         调整后的图像
     """
     print("步骤3: 应用色阶调整...")
 
+    xp = get_array_module(use_gpu)
     channel_names = ['R', 'G', 'B']
     adjusted_channels = []
 
@@ -321,18 +393,18 @@ def apply_color_cast_adjustment(inverted, adjust_params):
         # 平移到目标位置
         adjusted = scaled + params['target_min']
         # 限制在[0, 1]范围内
-        adjusted = np.clip(adjusted, 0.0, 1.0)
+        adjusted = xp.clip(adjusted, 0.0, 1.0)
 
-        print(f"  通道{channel_names[c]}: 调整后范围 [{adjusted.min():.4f}, {adjusted.max():.4f}]")
+        print(f"  通道{channel_names[c]}: 调整后范围 [{float(xp.min(adjusted)):.4f}, {float(xp.max(adjusted)):.4f}]")
         adjusted_channels.append(adjusted)
 
     # 合并通道
-    result = np.stack(adjusted_channels, axis=2)
+    result = xp.stack(adjusted_channels, axis=2)
 
     return result
 
 
-def remove_color_cast(image, ratio=0.01):
+def remove_color_cast(image, ratio=0.01, use_gpu=True):
     """
     去色罩处理（完整流程）
 
@@ -344,16 +416,17 @@ def remove_color_cast(image, ratio=0.01):
     Args:
         image: 输入的RGB图像 (H, W, 3)
         ratio: 色阶调整的超参数，控制最大值最小值的调整范围
+        use_gpu: 是否使用 GPU 加速
 
     Returns:
         处理后的图像
     """
-    inverted, adjust_params = analyze_color_cast(image, ratio)
-    result = apply_color_cast_adjustment(inverted, adjust_params)
+    inverted, adjust_params = analyze_color_cast(image, ratio, use_gpu)
+    result = apply_color_cast_adjustment(inverted, adjust_params, use_gpu)
     return result
 
 
-def apply_white_balance(image, method='gray-world', roi=None):
+def apply_white_balance(image, method='gray-world', roi=None, use_gpu=True):
     """
     应用白平衡矫正
 
@@ -364,11 +437,14 @@ def apply_white_balance(image, method='gray-world', roi=None):
             - 'perfect-reflector': 完美反射假设
             - 'auto': 自动选择（结合gray-world和perfect-reflector）
         roi: 用于分析白平衡的区域，如果为None则使用全图
+        use_gpu: 是否使用 GPU 加速
 
     Returns:
         白平衡后的图像
     """
     print(f"\n应用白平衡矫正 (方法: {method})...")
+
+    xp = get_array_module(use_gpu)
 
     # 如果指定了ROI，在ROI区域分析白平衡
     if roi is not None:
@@ -379,15 +455,13 @@ def apply_white_balance(image, method='gray-world', roi=None):
     else:
         analysis_region = image
 
-    channel_names = ['R', 'G', 'B']
-
     if method == 'gray-world':
         # 灰度世界假设：假设图像的平均颜色是灰色
         print("  使用灰度世界假设")
 
         # 计算每个通道的平均值
         means = [
-            analysis_region[:, :, c].mean()
+            float(xp.mean(analysis_region[:, :, c]))
             for c in range(3)
         ]
 
@@ -410,10 +484,17 @@ def apply_white_balance(image, method='gray-world', roi=None):
         percentile = 99.5
 
         # 计算每个通道的99.5分位数
-        brights = [
-            np.percentile(analysis_region[:, :, c], percentile)
-            for c in range(3)
-        ]
+        # CuPy 没有 percentile，需要先转到 CPU
+        if use_gpu and GPU_AVAILABLE:
+            brights = [
+                np.percentile(cp.asnumpy(analysis_region[:, :, c]), percentile)
+                for c in range(3)
+            ]
+        else:
+            brights = [
+                np.percentile(analysis_region[:, :, c], percentile)
+                for c in range(3)
+            ]
 
         print(f"  通道{percentile}%分位数: R={brights[0]:.4f}, G={brights[1]:.4f}, B={brights[2]:.4f}")
 
@@ -430,13 +511,22 @@ def apply_white_balance(image, method='gray-world', roi=None):
         print("  使用自动白平衡（结合灰度世界和完美反射）")
 
         # 灰度世界
-        means = [analysis_region[:, :, c].mean() for c in range(3)]
+        means = [float(xp.mean(analysis_region[:, :, c])) for c in range(3)]
         max_mean = max(means)
         gains_gray = [max_mean / m if m > 0 else 1.0 for m in means]
 
         # 完美反射
         percentile = 99.5
-        brights = [np.percentile(analysis_region[:, :, c], percentile) for c in range(3)]
+        if use_gpu and GPU_AVAILABLE:
+            brights = [
+                np.percentile(cp.asnumpy(analysis_region[:, :, c]), percentile)
+                for c in range(3)
+            ]
+        else:
+            brights = [
+                np.percentile(analysis_region[:, :, c], percentile)
+                for c in range(3)
+            ]
         min_bright = min(brights)
         gains_reflector = [min_bright / b if b > 0 else 1.0 for b in brights]
 
@@ -452,9 +542,9 @@ def apply_white_balance(image, method='gray-world', roi=None):
     # 应用增益到全图
     result = image.copy()
     for c in range(3):
-        result[:, :, c] = np.clip(result[:, :, c] * gains[c], 0.0, 1.0)
+        result[:, :, c] = xp.clip(result[:, :, c] * gains[c], 0.0, 1.0)
 
-    print(f"  白平衡后范围: [{result.min():.4f}, {result.max():.4f}]")
+    print(f"  白平衡后范围: [{float(xp.min(result)):.4f}, {float(xp.max(result)):.4f}]")
 
     return result
 
@@ -505,7 +595,7 @@ def process_nef_file(input_path, output_path, ratio=0.01, use_camera_wb=False,
                      wb_roi=None, exposure=0.0, brightness=0.0, contrast=1.0,
                      highlights=0.0, shadows=0.0, temperature=0.0, tint=0.0,
                      save_preset_path=None, load_preset_path=None,
-                     relative_adjust=False):
+                     relative_adjust=False, use_gpu=True):
     """
     处理Nikon NEF文件
 
@@ -528,6 +618,7 @@ def process_nef_file(input_path, output_path, ratio=0.01, use_camera_wb=False,
         save_preset_path: 保存预设到文件
         load_preset_path: 从文件加载预设
         relative_adjust: 是否使用相对值调整（在预设基础上微调）
+        use_gpu: 是否使用 GPU 加速
     """
     # 如果指定了预设文件，先加载预设
     if load_preset_path:
@@ -550,6 +641,7 @@ def process_nef_file(input_path, output_path, ratio=0.01, use_camera_wb=False,
             shadows = preset.get('shadows', 0.0) + shadows
             temperature = preset.get('temperature', 0.0) + temperature
             tint = preset.get('tint', 0.0) + tint
+            if use_gpu == DEFAULT_PRESET['use_gpu']: use_gpu = preset.get('use_gpu', use_gpu)
             print(f"在预设基础上微调")
         else:
             # 绝对值调整：命令行参数覆盖预设值（仅当使用默认值时）
@@ -565,8 +657,19 @@ def process_nef_file(input_path, output_path, ratio=0.01, use_camera_wb=False,
             if shadows == DEFAULT_PRESET['shadows']: shadows = preset.get('shadows', shadows)
             if temperature == DEFAULT_PRESET['temperature']: temperature = preset.get('temperature', temperature)
             if tint == DEFAULT_PRESET['tint']: tint = preset.get('tint', tint)
+            if use_gpu == DEFAULT_PRESET['use_gpu']: use_gpu = preset.get('use_gpu', use_gpu)
 
         print(f"预设参数已加载")
+
+    # 检查 GPU 可用性
+    if use_gpu and not GPU_AVAILABLE:
+        print("\n警告: GPU 加速已启用，但 CuPy 未安装或不可用")
+        print("将使用 CPU 进行处理...")
+        use_gpu = False
+    elif use_gpu and GPU_AVAILABLE:
+        print(f"\n使用 GPU 加速 (CuPy)")
+    else:
+        print(f"\n使用 CPU 处理")
 
     print(f"\n处理文件: {input_path}")
     print(f"输出文件: {output_path}")
@@ -612,6 +715,9 @@ def process_nef_file(input_path, output_path, ratio=0.01, use_camera_wb=False,
 
         print(f"\n归一化后图像范围: [{rgb_normalized.min():.4f}, {rgb_normalized.max():.4f}]")
 
+        # 转移到 GPU（如果启用）
+        rgb_normalized = to_device(rgb_normalized, use_gpu)
+
         # 提取ROI用于分析
         print(f"\n提取分析区域...")
         roi_image = extract_roi(rgb_normalized, roi)
@@ -619,8 +725,10 @@ def process_nef_file(input_path, output_path, ratio=0.01, use_camera_wb=False,
 
         # 可视化ROI（如果需要）
         if show_roi:
-            roi_vis = rgb_normalized.copy()
-            h, w = rgb_normalized.shape[:2]
+            # 需要先转回 CPU 用于 OpenCV 可视化
+            rgb_vis = to_host(rgb_normalized)
+            roi_vis = rgb_vis.copy()
+            h, w = rgb_vis.shape[:2]
 
             # 绘制ROI边框
             if roi == 'center':
@@ -648,41 +756,42 @@ def process_nef_file(input_path, output_path, ratio=0.01, use_camera_wb=False,
 
         # 在ROI区域分析色罩参数
         print(f"\n在ROI区域分析色罩...")
-        inverted_roi, adjust_params = analyze_color_cast(roi_image, ratio=ratio)
+        inverted_roi, adjust_params = analyze_color_cast(roi_image, ratio=ratio, use_gpu=use_gpu)
 
         # 对整张图应用调整
         print(f"\n对整张图应用色罩调整...")
+        xp = get_array_module(use_gpu)
         inverted_full = 1.0 - rgb_normalized
-        result = apply_color_cast_adjustment(inverted_full, adjust_params)
+        result = apply_color_cast_adjustment(inverted_full, adjust_params, use_gpu=use_gpu)
 
         # 应用白平衡（如果启用）
         if white_balance != 'none':
             # 如果没有指定白平衡ROI，使用与色罩相同的ROI
             wb_analysis_roi = wb_roi if wb_roi is not None else roi
-            result = apply_white_balance(result, method=white_balance, roi=wb_analysis_roi)
+            result = apply_white_balance(result, method=white_balance, roi=wb_analysis_roi, use_gpu=use_gpu)
 
         # 应用手动白平衡（如果指定了temperature或tint）
         if temperature != 0.0 or tint != 0.0:
             print(f"\n应用手动白平衡...")
-            result = apply_manual_white_balance(result, temperature, tint)
+            result = apply_manual_white_balance(result, temperature, tint, use_gpu=use_gpu)
 
         # 应用曝光调整
         if exposure != 0:
             print(f"\n应用曝光调整...")
-            result = apply_exposure(result, exposure)
-            print(f"  曝光调整后范围: [{result.min():.4f}, {result.max():.4f}]")
+            result = apply_exposure(result, exposure, use_gpu=use_gpu)
+            print(f"  曝光调整后范围: [{float(xp.min(result)):.4f}, {float(xp.max(result)):.4f}]")
 
         # 应用亮度/对比度调整
         if brightness != 0 or contrast != 1.0:
             print(f"\n应用亮度/对比度调整...")
-            result = apply_brightness_contrast(result, brightness, contrast)
-            print(f"  调整后范围: [{result.min():.4f}, {result.max():.4f}]")
+            result = apply_brightness_contrast(result, brightness, contrast, use_gpu=use_gpu)
+            print(f"  调整后范围: [{float(xp.min(result)):.4f}, {float(xp.max(result)):.4f}]")
 
         # 应用高光/阴影调整
         if highlights != 0 or shadows != 0:
             print(f"\n应用高光/阴影调整...")
-            result = apply_highlights_shadows(result, highlights, shadows)
-            print(f"  调整后范围: [{result.min():.4f}, {result.max():.4f}]")
+            result = apply_highlights_shadows(result, highlights, shadows, use_gpu=use_gpu)
+            print(f"  调整后范围: [{float(xp.min(result)):.4f}, {float(xp.max(result)):.4f}]")
 
         # 保存预设（如果指定）
         if save_preset_path:
@@ -700,8 +809,12 @@ def process_nef_file(input_path, output_path, ratio=0.01, use_camera_wb=False,
                 'shadows': shadows,
                 'temperature': temperature,
                 'tint': tint,
+                'use_gpu': use_gpu,
             }
             save_preset(save_preset_path, preset_params)
+
+        # 转回 CPU 用于保存
+        result = to_host(result)
 
         # 转换回16位范围
         result_16bit = np.clip(result * 65535, 0, 65535).astype(np.uint16)
@@ -886,6 +999,21 @@ def main():
         help='使用相对值调整模式（在预设基础上微调，需要配合--load-preset使用）'
     )
 
+    # GPU 参数
+    gpu_group = parser.add_mutually_exclusive_group()
+    gpu_group.add_argument(
+        '--use-gpu',
+        action='store_true',
+        default=True,
+        help='使用 GPU 加速（默认启用，需要安装 CuPy）'
+    )
+    gpu_group.add_argument(
+        '--no-gpu',
+        action='store_false',
+        dest='use_gpu',
+        help='禁用 GPU 加速，使用 CPU 处理'
+    )
+
     args = parser.parse_args()
 
     # 解析ROI参数
@@ -940,7 +1068,8 @@ def main():
             tint=args.tint,
             save_preset_path=args.save_preset,
             load_preset_path=args.load_preset,
-            relative_adjust=args.relative_adjust
+            relative_adjust=args.relative_adjust,
+            use_gpu=args.use_gpu
         )
         return 0
     except Exception as e:
