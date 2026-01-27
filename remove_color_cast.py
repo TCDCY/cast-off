@@ -790,7 +790,7 @@ def main():
     )
     parser.add_argument(
         '--roi',
-        default='center',
+        default='center-50',
         help='色罩分析区域 (默认: center)。可选值: center, center-60, center-50, full, 或 x1,y1,x2,y2'
     )
     parser.add_argument(
