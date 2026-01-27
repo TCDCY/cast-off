@@ -8,10 +8,162 @@ Nikon RAW (NEF) 去色罩处理脚本
 """
 
 import argparse
+import json
 import numpy as np
 import rawpy
 import cv2
 from pathlib import Path
+
+
+# 默认预设配置
+DEFAULT_PRESET = {
+    'ratio': 0.01,
+    'use_camera_wb': False,
+    'roi': 'center',
+    'white_balance': 'none',
+    'wb_roi': None,
+    'exposure': 0.0,
+    'brightness': 0.0,
+    'contrast': 1.0,
+    'highlights': 0.0,
+    'shadows': 0.0,
+    'manual_wb_multipliers': None,  # [R, G, B]
+}
+
+
+def save_preset(filepath, params):
+    """保存预设到JSON文件"""
+    preset = {}
+    for key, value in params.items():
+        if value is not None and value != DEFAULT_PRESET.get(key):
+            preset[key] = value
+    preset['_version'] = '1.0'
+    preset['_description'] = 'Nikon RAW 负片处理预设'
+
+    with open(filepath, 'w', encoding='utf-8') as f:
+        json.dump(preset, f, indent=2, ensure_ascii=False)
+    print(f"预设已保存到: {filepath}")
+
+
+def load_preset(filepath):
+    """从JSON文件加载预设"""
+    with open(filepath, 'r', encoding='utf-8') as f:
+        preset = json.load(f)
+
+    # 移除元数据
+    preset.pop('_version', None)
+    preset.pop('_description', None)
+
+    # 合并默认值
+    for key, value in DEFAULT_PRESET.items():
+        if key not in preset:
+            preset[key] = value
+
+    return preset
+
+
+def apply_exposure(image, ev):
+    """
+    应用曝光调整
+
+    Args:
+        image: 输入图像 (H, W, 3)
+        ev: 曝光值（EV），正数增加曝光，负数减少曝光
+
+    Returns:
+        调整后的图像
+    """
+    if ev == 0:
+        return image
+
+    factor = 2.0 ** ev
+    result = np.clip(image * factor, 0.0, 1.0)
+    return result
+
+
+def apply_brightness_contrast(image, brightness=0.0, contrast=1.0):
+    """
+    应用亮度和对比度调整
+
+    Args:
+        image: 输入图像 (H, W, 3)
+        brightness: 亮度调整，范围 [-1, 1]，0为不调整
+        contrast: 对比度调整，范围 [0, 3+]，1为不调整
+
+    Returns:
+        调整后的图像
+    """
+    if brightness == 0 and contrast == 1.0:
+        return image
+
+    # 应用对比度
+    if contrast != 1.0:
+        result = (image - 0.5) * contrast + 0.5
+    else:
+        result = image
+
+    # 应用亮度
+    if brightness != 0:
+        result = result + brightness
+
+    return np.clip(result, 0.0, 1.0)
+
+
+def apply_highlights_shadows(image, highlights=0.0, shadows=0.0):
+    """
+    应用高光和阴影调整
+
+    Args:
+        image: 输入图像 (H, W, 3)
+        highlights: 高光调整，范围 [-100, 100]，0为不调整
+                   负数降低高光，正数提亮高光
+        shadows: 阴影调整，范围 [-100, 100]，0为不调整
+                负数压暗阴影，正数提亮阴影
+
+    Returns:
+        调整后的图像
+    """
+    if highlights == 0 and shadows == 0:
+        return image
+
+    result = image.copy()
+
+    # 高光调整
+    if highlights != 0:
+        highlight_threshold = 0.6
+        highlight_mask = (image > highlight_threshold).astype(np.float32)
+        highlight_adjustment = (image - highlight_threshold) * (highlights / 100.0)
+        result = result + highlight_mask * highlight_adjustment
+
+    # 阴影调整
+    if shadows != 0:
+        shadow_threshold = 0.4
+        shadow_mask = (image < shadow_threshold).astype(np.float32)
+        shadow_adjustment = (shadow_threshold - image) * (shadows / 100.0) * shadow_mask
+        result = result - shadow_adjustment
+
+    return np.clip(result, 0.0, 1.0)
+
+
+def apply_manual_white_balance(image, multipliers):
+    """
+    应用手动白平衡（直接指定RGB增益）
+
+    Args:
+        image: 输入图像 (H, W, 3)
+        multipliers: RGB增益列表 [R, G, B]
+
+    Returns:
+        调整后的图像
+    """
+    if multipliers is None or len(multipliers) != 3:
+        return image
+
+    result = image.copy()
+    for c in range(3):
+        result[:, :, c] = np.clip(result[:, :, c] * multipliers[c], 0.0, 1.0)
+
+    return result
 
 
 def analyze_color_cast(image, ratio=0.01):
@@ -288,7 +440,9 @@ def extract_roi(image, roi_config='center'):
 
 def process_nef_file(input_path, output_path, ratio=0.01, use_camera_wb=False,
                      roi='center', show_roi=False, white_balance='none',
-                     wb_roi=None):
+                     wb_roi=None, exposure=0.0, brightness=0.0, contrast=1.0,
+                     highlights=0.0, shadows=0.0, manual_wb_multipliers=None,
+                     save_preset_path=None, load_preset_path=None):
     """
     处理Nikon NEF文件
 
@@ -298,25 +452,53 @@ def process_nef_file(input_path, output_path, ratio=0.01, use_camera_wb=False,
         ratio: 色阶调整的超参数
         use_camera_wb: 是否使用相机的白平衡
         roi: 感兴趣区域配置，用于分析色罩
-            - 'center': 中心80%区域（默认）
-            - 'center-60': 中心60%区域
-            - 'center-50': 中心50%区域
-            - 'full': 全图
-            - (x1, y1, x2, y2): 自定义矩形区域（像素坐标）
         show_roi: 是否显示并保存ROI区域的可视化图像
         white_balance: 白平衡方法
-            - 'none': 不进行白平衡（默认）
-            - 'gray-world': 灰度世界假设
-            - 'perfect-reflector': 完美反射假设
-            - 'auto': 自动选择
-        wb_roi: 白平衡分析区域，如果为None则使用与色罩相同的ROI
+        wb_roi: 白平衡分析区域
+        exposure: 曝光调整（EV）
+        brightness: 亮度调整 [-1, 1]
+        contrast: 对比度调整 [0, 3+]
+        highlights: 高光调整 [-100, 100]
+        shadows: 阴影调整 [-100, 100]
+        manual_wb_multipliers: 手动白平衡RGB增益 [R, G, B]
+        save_preset_path: 保存预设到文件
+        load_preset_path: 从文件加载预设
     """
+    # 如果指定了预设文件，先加载预设
+    if load_preset_path:
+        print(f"\n加载预设: {load_preset_path}")
+        preset = load_preset(load_preset_path)
+        # 更新参数（命令行参数优先级更高）
+        if ratio == DEFAULT_PRESET['ratio']: ratio = preset.get('ratio', ratio)
+        if use_camera_wb == DEFAULT_PRESET['use_camera_wb']: use_camera_wb = preset.get('use_camera_wb', use_camera_wb)
+        if roi == DEFAULT_PRESET['roi']: roi = preset.get('roi', roi)
+        if white_balance == DEFAULT_PRESET['white_balance']: white_balance = preset.get('white_balance', white_balance)
+        if wb_roi == DEFAULT_PRESET['wb_roi']: wb_roi = preset.get('wb_roi', wb_roi)
+        if exposure == DEFAULT_PRESET['exposure']: exposure = preset.get('exposure', exposure)
+        if brightness == DEFAULT_PRESET['brightness']: brightness = preset.get('brightness', brightness)
+        if contrast == DEFAULT_PRESET['contrast']: contrast = preset.get('contrast', contrast)
+        if highlights == DEFAULT_PRESET['highlights']: highlights = preset.get('highlights', highlights)
+        if shadows == DEFAULT_PRESET['shadows']: shadows = preset.get('shadows', shadows)
+        if manual_wb_multipliers == DEFAULT_PRESET['manual_wb_multipliers']: manual_wb_multipliers = preset.get('manual_wb_multipliers', manual_wb_multipliers)
+        print(f"预设参数已加载")
+
     print(f"\n处理文件: {input_path}")
     print(f"输出文件: {output_path}")
     print(f"调整比率: {ratio}")
     print(f"使用相机白平衡: {use_camera_wb}")
     print(f"分析区域: {roi}")
     print(f"白平衡方法: {white_balance}")
+    print(f"曝光调整: {exposure:+.2f} EV")
+    if brightness != 0:
+        print(f"亮度调整: {brightness:+.2f}")
+    if contrast != 1.0:
+        print(f"对比度调整: {contrast:.2f}")
+    if highlights != 0:
+        print(f"高光调整: {highlights:+.1f}")
+    if shadows != 0:
+        print(f"阴影调整: {shadows:+.1f}")
+    if manual_wb_multipliers:
+        print(f"手动白平衡: R={manual_wb_multipliers[0]:.3f}, G={manual_wb_multipliers[1]:.3f}, B={manual_wb_multipliers[2]:.3f}")
 
     # 读取RAW文件
     with rawpy.imread(input_path) as raw:
@@ -390,6 +572,47 @@ def process_nef_file(input_path, output_path, ratio=0.01, use_camera_wb=False,
             wb_analysis_roi = wb_roi if wb_roi is not None else roi
             result = apply_white_balance(result, method=white_balance, roi=wb_analysis_roi)
 
+        # 应用手动白平衡（如果指定）
+        if manual_wb_multipliers:
+            print(f"\n应用手动白平衡...")
+            result = apply_manual_white_balance(result, manual_wb_multipliers)
+
+        # 应用曝光调整
+        if exposure != 0:
+            print(f"\n应用曝光调整...")
+            result = apply_exposure(result, exposure)
+            print(f"  曝光调整后范围: [{result.min():.4f}, {result.max():.4f}]")
+
+        # 应用亮度/对比度调整
+        if brightness != 0 or contrast != 1.0:
+            print(f"\n应用亮度/对比度调整...")
+            result = apply_brightness_contrast(result, brightness, contrast)
+            print(f"  调整后范围: [{result.min():.4f}, {result.max():.4f}]")
+
+        # 应用高光/阴影调整
+        if highlights != 0 or shadows != 0:
+            print(f"\n应用高光/阴影调整...")
+            result = apply_highlights_shadows(result, highlights, shadows)
+            print(f"  调整后范围: [{result.min():.4f}, {result.max():.4f}]")
+
+        # 保存预设（如果指定）
+        if save_preset_path:
+            print(f"\n保存预设...")
+            preset_params = {
+                'ratio': ratio,
+                'use_camera_wb': use_camera_wb,
+                'roi': roi if isinstance(roi, str) else list(roi) if isinstance(roi, tuple) else roi,
+                'white_balance': white_balance,
+                'wb_roi': wb_roi if isinstance(wb_roi, str) else list(wb_roi) if isinstance(wb_roi, tuple) else wb_roi,
+                'exposure': exposure,
+                'brightness': brightness,
+                'contrast': contrast,
+                'highlights': highlights,
+                'shadows': shadows,
+                'manual_wb_multipliers': manual_wb_multipliers,
+            }
+            save_preset(save_preset_path, preset_params)
+
         # 转换回16位范围
         result_16bit = np.clip(result * 65535, 0, 65535).astype(np.uint16)
 
@@ -431,48 +654,47 @@ def main():
     # 基本使用（使用中心80%区域分析）
     python remove_color_cast.py input.NEF output.jpg
 
-    # 使用更小的中心区域分析（60%）
-    python remove_color_cast.py input.NEF output.jpg --roi center-60
+    # 曝光调整
+    python remove_color_cast.py input.NEF output.jpg --exposure +0.5
 
-    # 使用全图分析
-    python remove_color_cast.py input.NEF output.jpg --roi full
+    # 亮度和对比度调整
+    python remove_color_cast.py input.NEF output.jpg --brightness 0.1 --contrast 1.2
 
-    # 自定义分析区域 (x1, y1, x2, y2)
-    python remove_color_cast.py input.NEF output.jpg --roi 1000,500,4000,3000
+    # 高光和阴影调整
+    python remove_color_cast.py input.NEF output.jpg --highlights -20 --shadows +30
 
-    # 显示ROI可视化
-    python remove_color_cast.py input.NEF output.jpg --show-roi
-
-    # 应用白平衡（灰度世界假设）
-    python remove_color_cast.py input.NEF output.jpg --white-balance gray-world
-
-    # 应用白平衡（完美反射假设）
-    python remove_color_cast.py input.NEF output.jpg --white-balance perfect-reflector
+    # 手动白平衡（指定RGB增益）
+    python remove_color_cast.py input.NEF output.jpg --manual-wb 1.2,1.0,0.9
 
     # 应用自动白平衡
     python remove_color_cast.py input.NEF output.jpg --white-balance auto
 
-    # 使用不同的白平衡分析区域
-    python remove_color_cast.py input.NEF output.jpg --white-balance gray-world --wb-roi center-50
+    # 保存预设
+    python remove_color_cast.py input.NEF output.jpg --exposure +0.5 --contrast 1.2 --save-preset my_settings.json
 
-    # 自定义调整比率
-    python remove_color_cast.py input.NEF output.jpg --ratio 0.02
+    # 使用预设
+    python remove_color_cast.py input.NEF output.jpg --load-preset my_settings.json
 
-    # 使用相机白平衡
-    python remove_color_cast.py input.NEF output.jpg --use-camera-wb
-
-    # 保存为16位TIFF
-    python remove_color_cast.py input.NEF output.tif
+    # 完整示例
+    python remove_color_cast.py input.NEF output.jpg \\
+        --roi center-60 \\
+        --exposure +0.3 \\
+        --contrast 1.1 \\
+        --shadows +20 \\
+        --white-balance gray-world \\
+        --save-preset negative_film.json
         '''
     )
 
     parser.add_argument('input', help='输入NEF文件路径')
     parser.add_argument('output', help='输出文件路径 (支持.jpg, .png, .tif)')
+
+    # 基础参数
     parser.add_argument(
         '--ratio',
         type=float,
         default=0.01,
-        help='色阶调整比率 (默认: 0.01)。较大的值会进行更激进的调整。'
+        help='色阶调整比率 (默认: 0.01)'
     )
     parser.add_argument(
         '--use-camera-wb',
@@ -482,23 +704,84 @@ def main():
     parser.add_argument(
         '--roi',
         default='center',
-        help='色罩分析区域 (默认: center)。可选值: center, center-60, center-50, full, 或自定义坐标 x1,y1,x2,y2'
+        help='色罩分析区域 (默认: center)。可选值: center, center-60, center-50, full, 或 x1,y1,x2,y2'
     )
     parser.add_argument(
         '--show-roi',
         action='store_true',
         help='显示并保存ROI区域的可视化图像'
     )
+
+    # 白平衡参数
     parser.add_argument(
         '--white-balance',
         choices=['none', 'gray-world', 'perfect-reflector', 'auto'],
         default='none',
-        help='白平衡方法 (默认: none)。可选值: none, gray-world, perfect-reflector, auto'
+        help='白平衡方法 (默认: none)'
     )
     parser.add_argument(
         '--wb-roi',
         default=None,
-        help='白平衡分析区域 (默认: 与色罩ROI相同)。可选值: center, center-60, center-50, full, 或自定义坐标 x1,y1,x2,y2'
+        help='白平衡分析区域 (默认: 与色罩ROI相同)'
+    )
+    parser.add_argument(
+        '--manual-wb',
+        metavar='R,G,B',
+        default=None,
+        help='手动白平衡RGB增益 (例如: 1.2,1.0,0.9)'
+    )
+
+    # 亮度调整参数
+    parser.add_argument(
+        '--exposure',
+        type=float,
+        default=0.0,
+        metavar='EV',
+        help='曝光调整，例如: +0.5, -0.3 (单位: EV)'
+    )
+    parser.add_argument(
+        '--brightness',
+        type=float,
+        default=0.0,
+        metavar='VAL',
+        help='亮度调整，范围 [-1, 1]，例如: 0.1, -0.2'
+    )
+    parser.add_argument(
+        '--contrast',
+        type=float,
+        default=1.0,
+        metavar='VAL',
+        help='对比度调整，正常值1.0，例如: 1.2, 0.9'
+    )
+
+    # 高光/阴影调整
+    parser.add_argument(
+        '--highlights',
+        type=float,
+        default=0.0,
+        metavar='VAL',
+        help='高光调整，范围 [-100, 100]，负数降低高光'
+    )
+    parser.add_argument(
+        '--shadows',
+        type=float,
+        default=0.0,
+        metavar='VAL',
+        help='阴影调整，范围 [-100, 100]，正数提亮阴影'
+    )
+
+    # 预设参数
+    parser.add_argument(
+        '--save-preset',
+        metavar='PATH',
+        default=None,
+        help='保存当前设置到预设文件'
+    )
+    parser.add_argument(
+        '--load-preset',
+        metavar='PATH',
+        default=None,
+        help='从预设文件加载设置'
     )
 
     args = parser.parse_args()
@@ -506,7 +789,6 @@ def main():
     # 解析ROI参数
     roi = args.roi
     try:
-        # 尝试解析为自定义坐标
         if ',' in roi:
             coords = [int(x.strip()) for x in roi.split(',')]
             if len(coords) == 4:
@@ -527,6 +809,18 @@ def main():
         except ValueError:
             pass
 
+    # 解析手动白平衡参数
+    manual_wb_multipliers = None
+    if args.manual_wb:
+        try:
+            manual_wb_multipliers = [float(x.strip()) for x in args.manual_wb.split(',')]
+            if len(manual_wb_multipliers) != 3:
+                raise ValueError("需要3个值")
+            print(f"手动白平衡: R={manual_wb_multipliers[0]}, G={manual_wb_multipliers[1]}, B={manual_wb_multipliers[2]}")
+        except ValueError as e:
+            print(f"错误: 手动白平衡参数格式不正确: {e}")
+            return 1
+
     # 检查输入文件是否存在
     if not Path(args.input).exists():
         print(f"错误: 输入文件不存在: {args.input}")
@@ -542,7 +836,15 @@ def main():
             roi=roi,
             show_roi=args.show_roi,
             white_balance=args.white_balance,
-            wb_roi=wb_roi
+            wb_roi=wb_roi,
+            exposure=args.exposure,
+            brightness=args.brightness,
+            contrast=args.contrast,
+            highlights=args.highlights,
+            shadows=args.shadows,
+            manual_wb_multipliers=manual_wb_multipliers,
+            save_preset_path=args.save_preset,
+            load_preset_path=args.load_preset
         )
         return 0
     except Exception as e:
