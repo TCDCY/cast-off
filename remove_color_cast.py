@@ -139,6 +139,112 @@ def remove_color_cast(image, ratio=0.01):
     return result
 
 
+def apply_white_balance(image, method='gray-world', roi=None):
+    """
+    应用白平衡矫正
+
+    Args:
+        image: 输入的RGB图像 (H, W, 3)
+        method: 白平衡方法
+            - 'gray-world': 灰度世界假设（默认）
+            - 'perfect-reflector': 完美反射假设
+            - 'auto': 自动选择（结合gray-world和perfect-reflector）
+        roi: 用于分析白平衡的区域，如果为None则使用全图
+
+    Returns:
+        白平衡后的图像
+    """
+    print(f"\n应用白平衡矫正 (方法: {method})...")
+
+    # 如果指定了ROI，在ROI区域分析白平衡
+    if roi is not None:
+        if isinstance(roi, str):
+            analysis_region = extract_roi(image, roi)
+        else:
+            analysis_region = image[roi[1]:roi[3], roi[0]:roi[2]]
+    else:
+        analysis_region = image
+
+    channel_names = ['R', 'G', 'B']
+
+    if method == 'gray-world':
+        # 灰度世界假设：假设图像的平均颜色是灰色
+        print("  使用灰度世界假设")
+
+        # 计算每个通道的平均值
+        means = [
+            analysis_region[:, :, c].mean()
+            for c in range(3)
+        ]
+
+        print(f"  通道平均值: R={means[0]:.4f}, G={means[1]:.4f}, B={means[2]:.4f}")
+
+        # 以绿色通道为基准（或使用最大值）
+        # 这里使用最大值作为基准，避免某个通道过曝
+        max_mean = max(means)
+
+        # 计算增益系数
+        gains = [max_mean / m if m > 0 else 1.0 for m in means]
+
+        print(f"  增益系数: R={gains[0]:.4f}, G={gains[1]:.4f}, B={gains[2]:.4f}")
+
+    elif method == 'perfect-reflector':
+        # 完美反射假设：假设最亮的像素应该是白色
+        print("  使用完美反射假设")
+
+        # 使用percentile来避免极端值的影响
+        percentile = 99.5
+
+        # 计算每个通道的99.5分位数
+        brights = [
+            np.percentile(analysis_region[:, :, c], percentile)
+            for c in range(3)
+        ]
+
+        print(f"  通道{percentile}%分位数: R={brights[0]:.4f}, G={brights[1]:.4f}, B={brights[2]:.4f}")
+
+        # 以最小值作为基准（让最亮的通道保持不变）
+        min_bright = min(brights)
+
+        # 计算增益系数
+        gains = [min_bright / b if b > 0 else 1.0 for b in brights]
+
+        print(f"  增益系数: R={gains[0]:.4f}, G={gains[1]:.4f}, B={gains[2]:.4f}")
+
+    elif method == 'auto':
+        # 自动选择：结合两种方法
+        print("  使用自动白平衡（结合灰度世界和完美反射）")
+
+        # 灰度世界
+        means = [analysis_region[:, :, c].mean() for c in range(3)]
+        max_mean = max(means)
+        gains_gray = [max_mean / m if m > 0 else 1.0 for m in means]
+
+        # 完美反射
+        percentile = 99.5
+        brights = [np.percentile(analysis_region[:, :, c], percentile) for c in range(3)]
+        min_bright = min(brights)
+        gains_reflector = [min_bright / b if b > 0 else 1.0 for b in brights]
+
+        # 取平均
+        gains = [(g1 + g2) / 2 for g1, g2 in zip(gains_gray, gains_reflector)]
+
+        print(f"  增益系数: R={gains[0]:.4f}, G={gains[1]:.4f}, B={gains[2]:.4f}")
+
+    else:
+        print(f"  警告: 未知的白平衡方法 '{method}'，跳过白平衡")
+        return image
+
+    # 应用增益到全图
+    result = image.copy()
+    for c in range(3):
+        result[:, :, c] = np.clip(result[:, :, c] * gains[c], 0.0, 1.0)
+
+    print(f"  白平衡后范围: [{result.min():.4f}, {result.max():.4f}]")
+
+    return result
+
+
 def extract_roi(image, roi_config='center'):
     """
     提取感兴趣区域(ROI)用于分析
@@ -181,7 +287,8 @@ def extract_roi(image, roi_config='center'):
 
 
 def process_nef_file(input_path, output_path, ratio=0.01, use_camera_wb=False,
-                     roi='center', show_roi=False):
+                     roi='center', show_roi=False, white_balance='none',
+                     wb_roi=None):
     """
     处理Nikon NEF文件
 
@@ -197,12 +304,19 @@ def process_nef_file(input_path, output_path, ratio=0.01, use_camera_wb=False,
             - 'full': 全图
             - (x1, y1, x2, y2): 自定义矩形区域（像素坐标）
         show_roi: 是否显示并保存ROI区域的可视化图像
+        white_balance: 白平衡方法
+            - 'none': 不进行白平衡（默认）
+            - 'gray-world': 灰度世界假设
+            - 'perfect-reflector': 完美反射假设
+            - 'auto': 自动选择
+        wb_roi: 白平衡分析区域，如果为None则使用与色罩相同的ROI
     """
     print(f"\n处理文件: {input_path}")
     print(f"输出文件: {output_path}")
     print(f"调整比率: {ratio}")
     print(f"使用相机白平衡: {use_camera_wb}")
     print(f"分析区域: {roi}")
+    print(f"白平衡方法: {white_balance}")
 
     # 读取RAW文件
     with rawpy.imread(input_path) as raw:
@@ -270,6 +384,12 @@ def process_nef_file(input_path, output_path, ratio=0.01, use_camera_wb=False,
         inverted_full = 1.0 - rgb_normalized
         result = apply_color_cast_adjustment(inverted_full, adjust_params)
 
+        # 应用白平衡（如果启用）
+        if white_balance != 'none':
+            # 如果没有指定白平衡ROI，使用与色罩相同的ROI
+            wb_analysis_roi = wb_roi if wb_roi is not None else roi
+            result = apply_white_balance(result, method=white_balance, roi=wb_analysis_roi)
+
         # 转换回16位范围
         result_16bit = np.clip(result * 65535, 0, 65535).astype(np.uint16)
 
@@ -323,6 +443,18 @@ def main():
     # 显示ROI可视化
     python remove_color_cast.py input.NEF output.jpg --show-roi
 
+    # 应用白平衡（灰度世界假设）
+    python remove_color_cast.py input.NEF output.jpg --white-balance gray-world
+
+    # 应用白平衡（完美反射假设）
+    python remove_color_cast.py input.NEF output.jpg --white-balance perfect-reflector
+
+    # 应用自动白平衡
+    python remove_color_cast.py input.NEF output.jpg --white-balance auto
+
+    # 使用不同的白平衡分析区域
+    python remove_color_cast.py input.NEF output.jpg --white-balance gray-world --wb-roi center-50
+
     # 自定义调整比率
     python remove_color_cast.py input.NEF output.jpg --ratio 0.02
 
@@ -357,6 +489,17 @@ def main():
         action='store_true',
         help='显示并保存ROI区域的可视化图像'
     )
+    parser.add_argument(
+        '--white-balance',
+        choices=['none', 'gray-world', 'perfect-reflector', 'auto'],
+        default='none',
+        help='白平衡方法 (默认: none)。可选值: none, gray-world, perfect-reflector, auto'
+    )
+    parser.add_argument(
+        '--wb-roi',
+        default=None,
+        help='白平衡分析区域 (默认: 与色罩ROI相同)。可选值: center, center-60, center-50, full, 或自定义坐标 x1,y1,x2,y2'
+    )
 
     args = parser.parse_args()
 
@@ -372,6 +515,18 @@ def main():
     except ValueError:
         pass
 
+    # 解析白平衡ROI参数
+    wb_roi = args.wb_roi
+    if wb_roi is not None:
+        try:
+            if ',' in wb_roi:
+                coords = [int(x.strip()) for x in wb_roi.split(',')]
+                if len(coords) == 4:
+                    wb_roi = tuple(coords)
+                    print(f"使用自定义白平衡ROI区域: {wb_roi}")
+        except ValueError:
+            pass
+
     # 检查输入文件是否存在
     if not Path(args.input).exists():
         print(f"错误: 输入文件不存在: {args.input}")
@@ -385,7 +540,9 @@ def main():
             ratio=args.ratio,
             use_camera_wb=args.use_camera_wb,
             roi=roi,
-            show_roi=args.show_roi
+            show_roi=args.show_roi,
+            white_balance=args.white_balance,
+            wb_roi=wb_roi
         )
         return 0
     except Exception as e:
