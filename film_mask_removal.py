@@ -446,6 +446,10 @@ def create_histogram_panel(
     return panel
 
 
+# TODO: any
+class Preset:
+    pass
+
 class Metadata:
     """Container for all intermediate data and results."""
 
@@ -496,6 +500,8 @@ class Metadata:
         self.vis_path: Optional[str] = None
         self.vis_callbacks: List[callable] = []  # Visualization callbacks registered by stages
 
+        self.preset = Preset()
+
     def register_vis(self, callback: callable):
         """Register a visualization callback.
 
@@ -524,11 +530,41 @@ class Stage(ABC):
     def __init__(self, name: str = None):
         self.name = name or self.__class__.__name__
 
-    @abstractmethod
     def __call__(self, metadata: Metadata) -> Metadata:
-        """Execute the stage processing."""
+        """
+        Execute the stage processing.
+
+        if apply_preset:
+            1. apply only
+        else:
+            1. preprocess
+            2. apply
+        """
+        metadata = self.preprocess(metadata)
+        metadata = self.apply(metadata)
+        return metadata
+
+    @abstractmethod
+    def preprocess(self, metadata: Metadata) -> Metadata:
+        """Prepare the stage processing."""
         pass
 
+    @abstractmethod
+    def _apply_impl(self, metadata: Metadata) -> Metadata:
+        """Apply processing."""
+        pass
+
+    def apply(self, metadata: Metadata) -> Metadata:
+        """Apply processing."""
+        self.track(metadata)
+        return self._apply_impl(metadata)
+
+    def track(self, metadata: Metadata):
+        """Track apply to preset"""
+        pass
+
+    # TODO: hard code vis
+    # @abstractmethod
     def vis(self, metadata: Metadata) -> Optional[np.ndarray]:
         """Generate visualization for this stage. Optional."""
         return None
@@ -537,7 +573,13 @@ class Stage(ABC):
 class RawLoadStage(Stage):
     """Load RAW file from disk."""
 
-    def __call__(self, metadata: Metadata) -> Metadata:
+    def preprocess(self, metadata: Metadata) -> Metadata:
+        """
+        Apply only. empty preprocess
+        """
+        return metadata
+
+    def _apply_impl(self, metadata: Metadata) -> Metadata:
         print(f"  [{self.name}] Loading RAW file: {metadata.raw_path}")
 
         with rawpy.imread(metadata.raw_path) as raw:
@@ -557,7 +599,7 @@ class RawLoadStage(Stage):
 class BorderExtractStage(Stage):
     """Extract border region from image."""
 
-    def __call__(self, metadata: Metadata) -> Metadata:
+    def preprocess(self, metadata: Metadata) -> Metadata:
         print(f"  [{self.name}] Extracting border region...")
 
         h, w = metadata.current_image.shape[:2]
@@ -582,6 +624,10 @@ class BorderExtractStage(Stage):
         img_snapshot = metadata.current_image.copy()
         metadata.register_vis(lambda md: self._vis_with_image(img_snapshot, md))
 
+        return metadata
+
+    def _apply_impl(self, metadata: Metadata) -> Metadata:
+        """Apply nothing"""
         return metadata
 
     def _vis_with_image(self, img: np.ndarray, metadata: Metadata) -> Optional[np.ndarray]:
@@ -616,7 +662,7 @@ class BorderExtractStage(Stage):
 class ColorClassifyStage(Stage):
     """Classify border pixels by color characteristics."""
 
-    def __call__(self, metadata: Metadata) -> Metadata:
+    def preprocess(self, metadata: Metadata) -> Metadata:
         print(f"  [{self.name}] Classifying border pixels...")
 
         pixels = metadata.border_pixels
@@ -655,6 +701,11 @@ class ColorClassifyStage(Stage):
         img_snapshot = metadata.current_image.copy()
         metadata.register_vis(lambda md: self._vis_with_image(img_snapshot, md))
 
+        return metadata
+
+
+    def _apply_impl(self, metadata: Metadata) -> Metadata:
+        """Apply nothing."""
         return metadata
 
     def _vis_with_image(self, img: np.ndarray, metadata: Metadata) -> Optional[np.ndarray]:
@@ -748,7 +799,7 @@ class ColorClassifyStage(Stage):
 class WhiteBalanceComputeStage(Stage):
     """Compute white balance gains from classified clusters."""
 
-    def __call__(self, metadata: Metadata) -> Metadata:
+    def preprocess(self, metadata: Metadata) -> Metadata:
         print(f"  [{self.name}] Computing white balance...")
 
         # Collect pixels from selected classes
@@ -774,11 +825,24 @@ class WhiteBalanceComputeStage(Stage):
         print(f"       WB gains R={wb_gains[0]:.3f} G={wb_gains[1]:.3f} B={wb_gains[2]:.3f}")
         return metadata
 
+    def _apply_impl(self, metadata: Metadata) -> Metadata:
+        """Apply nothing, preprocess metadata only."""
+        return metadata
+
 
 class WhiteBalanceApplyStage(Stage):
     """Apply white balance to image."""
 
-    def __call__(self, metadata: Metadata) -> Metadata:
+    def preprocess(self, metadata: Metadata) -> Metadata:
+        return metadata
+
+    def track(self, metadata: Metadata):
+        """
+        Track wb_gains
+        """
+        metadata.preset.wb_gains = metadata.wb_gains
+
+    def _apply_impl(self, metadata: Metadata) -> Metadata:
         print(f"  [{self.name}] Applying white balance...")
 
         float_img = metadata.current_image.astype(np.float32)
@@ -791,20 +855,27 @@ class WhiteBalanceApplyStage(Stage):
 class InvertStage(Stage):
     """Invert image (negative to positive)."""
 
-    def __call__(self, metadata: Metadata) -> Metadata:
+    def preprocess(self, metadata: Metadata) -> Metadata:
+        return metadata
+
+    def _apply_impl(self, metadata: Metadata) -> Metadata:
         print(f"  [{self.name}] Inverting image...")
         max_val = np.iinfo(metadata.current_image.dtype).max
         metadata.current_image = max_val - metadata.current_image
         return metadata
 
 
+# TODO: review ?? 这个stage的意义? 单纯是可视化, 选区好像后面还得再来一次
 class LevelRegionSelectStage(Stage):
     """Visualize level detection regions."""
 
-    def __call__(self, metadata: Metadata) -> Metadata:
+    def preprocess(self, metadata: Metadata) -> Metadata:
         # Register visualization callback with current image snapshot
         img_snapshot = metadata.current_image.copy()
         metadata.register_vis(lambda md: self._vis_with_image(img_snapshot, md))
+        return metadata
+
+    def _apply_impl(self, metadata: Metadata) -> Metadata:
         return metadata
 
     def _vis_with_image(self, img: np.ndarray, metadata: Metadata) -> Optional[np.ndarray]:
@@ -898,7 +969,7 @@ class LevelRegionSelectStage(Stage):
 class LevelAdjustStage(Stage):
     """Adjust RGB channel levels using histogram-based detection from different regions."""
 
-    def __call__(self, metadata: Metadata) -> Metadata:
+    def preprocess(self, metadata: Metadata) -> Metadata:
         print(f"  [{self.name}] Adjusting levels...")
         print(f"       Black level region: {metadata.black_level_region}")
         print(f"       White level region: {metadata.white_level_region}")
@@ -926,6 +997,8 @@ class LevelAdjustStage(Stage):
         # Store detected levels for visualization
         metadata.detected_levels = {}
 
+        black_points = []
+        white_points = []
         for c, name in enumerate(['R', 'G', 'B']):
             channel = metadata.current_image[:, :, c].astype(np.float32)
 
@@ -948,6 +1021,7 @@ class LevelAdjustStage(Stage):
                 max_val
             )
 
+            # TODO: review?? useless??
             # Ensure valid range
             if white_point - black_point < max_val * 0.02:
                 black_point = np.percentile(channel, 0.01)
@@ -958,7 +1032,31 @@ class LevelAdjustStage(Stage):
             # Save detected levels
             metadata.detected_levels[name] = {'black': black_point, 'white': white_point}
 
-            # Stretch to full range
+            black_points.append(black_point)
+            white_points.append(white_point)
+
+            # TODO: remove
+            # # Stretch to full range
+            # stretched = (channel - black_point) / (white_point - black_point) * max_val
+            # result[:, :, c] = np.clip(stretched, 0, max_val)
+
+        metadata.black_points = black_points
+        metadata.white_points = white_points
+        return metadata
+
+    def track(self, metadata: Metadata):
+        metadata.preset.black_points = metadata.black_points
+        metadata.preset.white_points = metadata.white_points
+
+    def _apply_impl(self, metadata: Metadata) -> Metadata:
+        black_points = metadata.black_points
+        white_points = metadata.white_points
+        assert len(black_points) == 3, "Should be RGB."
+
+        max_val = np.iinfo(metadata.current_image.dtype).max
+        result = np.empty_like(metadata.current_image, dtype=np.float32)
+        for c, (black_point, white_point) in enumerate(zip(black_points, white_points)):
+            channel = metadata.current_image[:, :, c].astype(np.float32)
             stretched = (channel - black_point) / (white_point - black_point) * max_val
             result[:, :, c] = np.clip(stretched, 0, max_val)
 
@@ -998,7 +1096,7 @@ class LevelAdjustStage(Stage):
 class ToneAdjustStage(Stage):
     """Adjust image tone using luminance level adjustment (after RGB level adjustment)."""
 
-    def __call__(self, metadata: Metadata) -> Metadata:
+    def preprocess(self, metadata: Metadata) -> Metadata:
         print(f"  [{self.name}] Adjusting tone (luminance)...")
         print(f"       Tone detection region: {metadata.tone_region}")
         print(f"       Pixel threshold: {metadata.tone_pixel_threshold*100:.3f}%")
@@ -1036,6 +1134,28 @@ class ToneAdjustStage(Stage):
         # Store detected levels for visualization
         metadata.detected_tone_levels = {'black': black_point, 'white': white_point}
 
+        metadata.tone_black_point = black_point
+        metadata.tone_white_point = white_point
+
+        # Register visualization callback
+        img_snapshot = metadata.current_image.copy()
+        metadata.register_vis(lambda md: self._vis_with_image(img_snapshot, md))
+
+        return metadata
+
+    def track(self, metadata: Metadata):
+        metadata.preset.tone_black_point = metadata.tone_black_point
+        metadata.preset.tone_white_point = metadata.tone_white_point
+        metadata.preset.tone_gamma = metadata.tone_gamma
+
+    def _apply_impl(self, metadata: Metadata) -> Metadata:
+        black_point = metadata.tone_black_point
+        white_point = metadata.tone_white_point
+        tone_gamma = metadata.tone_gamma
+        img = metadata.current_image.astype(np.float32)
+        # TODO: max_val有时候hard code 有时候info, 直接hard code就行
+        max_val = 65535  # 16-bit
+
         # Apply tone adjustment to ENTIRE image by clipping and remapping to full range
         # For each channel: clip and stretch
         for c in range(3):
@@ -1048,8 +1168,8 @@ class ToneAdjustStage(Stage):
             channel_norm = (channel_clipped - black_point) / (white_point - black_point)
 
             # Apply gamma correction
-            if metadata.tone_gamma != 1.0:
-                channel_norm = np.power(channel_norm, 1.0 / metadata.tone_gamma)
+            if tone_gamma != 1.0:
+                channel_norm = np.power(channel_norm, 1.0 / tone_gamma)
 
             # Remap to full range [0, max_val]
             result_channel = channel_norm * max_val
@@ -1057,11 +1177,6 @@ class ToneAdjustStage(Stage):
             img[:, :, c] = result_channel
 
         metadata.current_image = np.clip(img, 0, max_val).astype(metadata.current_image.dtype)
-
-        # Register visualization callback
-        img_snapshot = metadata.current_image.copy()
-        metadata.register_vis(lambda md: self._vis_with_image(img_snapshot, md))
-
         return metadata
 
     def _vis_with_image(self, img: np.ndarray, metadata: Metadata) -> Optional[np.ndarray]:
@@ -1180,7 +1295,10 @@ class ToneAdjustStage(Stage):
 class SaveStage(Stage):
     """Save current image."""
 
-    def __call__(self, metadata: Metadata) -> Metadata:
+    def preprocess(self, metadata: Metadata) -> Metadata:
+        return metadata
+
+    def _apply_impl(self, metadata: Metadata) -> Metadata:
         if metadata.output_path is None:
             return metadata
 
@@ -1194,7 +1312,7 @@ class SaveStage(Stage):
 class VisualizeStage(Stage):
     """Generate combined visualization from registered callbacks."""
 
-    def __call__(self, metadata: Metadata) -> Metadata:
+    def preprocess(self, metadata: Metadata) -> Metadata:
         if metadata.vis_path is None:
             return metadata
 
@@ -1235,6 +1353,9 @@ class VisualizeStage(Stage):
         print(f"       Visualization saved: {metadata.vis_path}")
 
         metadata.vis_image = combined
+        return metadata
+
+    def _apply_impl(self, metadata: Metadata) -> Metadata:
         return metadata
 
 
