@@ -1066,15 +1066,34 @@ class ToneAdjustStage(Stage):
         # Create main image visualization
         vis = img_8bit.copy()
 
+        # Create mask for tone detection region
+        tone_region = self._get_region_mask(metadata, h, w)
+
+        # Overlay tone region (green)
+        if tone_region is not None:
+            overlay = np.zeros_like(vis)
+            overlay[tone_region] = [0, 255, 0]  # Green for tone detection region
+            vis = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
+
         # Add title
         cv2.putText(vis, 'Tone Adjustment (Luminance)', (10, 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+
+        # Add region label
+        cv2.putText(vis, f'Region: {metadata.tone_region}', (10, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+
+        # Add pixel count info
+        if tone_region is not None:
+            tone_count = np.sum(tone_region)
+            cv2.putText(vis, f'{tone_count:,} px', (10, 120),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1, cv2.LINE_AA)
 
         # Add parameters
         black = metadata.detected_tone_levels['black']
         white = metadata.detected_tone_levels['white']
         gamma = metadata.tone_gamma
-        cv2.putText(vis, f'Black: {black:.0f} White: {white:.0f} Gamma: {gamma:.2f}', (10, 80),
+        cv2.putText(vis, f'Black: {black:.0f} White: {white:.0f} Gamma: {gamma:.2f}', (10, 150),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1, cv2.LINE_AA)
 
         # Create luminance histogram panel
@@ -1084,6 +1103,17 @@ class ToneAdjustStage(Stage):
         combined = np.vstack([vis, hist_panel])
 
         return combined
+
+    def _get_region_mask(self, metadata: Metadata, h: int, w: int) -> np.ndarray:
+        """Get mask for tone detection region."""
+        region = metadata.tone_region
+
+        # Use existing border mask for efficiency
+        if region == 'border' and metadata.border_mask is not None:
+            return metadata.border_mask
+
+        # Use common function to create mask
+        return create_region_mask(h, w, region, metadata.border_specs, metadata.center_rect_ratio)
 
     def _create_luminance_histogram_panel(self, img: np.ndarray, metadata: Metadata,
                                           panel_height: int, panel_width: int) -> np.ndarray:
