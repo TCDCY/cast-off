@@ -475,7 +475,7 @@ class Metadata:
         # Parameters
         self.wb_threshold: float = 30
         self.level_threshold: float = 0.99
-        self.level_pixel_threshold: float = 0.0001  # Threshold for level detection (0.01% by default)
+        self.level_pixel_threshold: List[float] = [0.0001, 0.0001, 0.0001]  # Per-channel thresholds [R, G, B]
 
         # Level detection regions
         self.black_level_region: str = 'border'  # 'border' or 'center' or custom
@@ -904,7 +904,15 @@ class LevelAdjustStage(Stage):
         print(f"  [{self.name}] Adjusting levels...")
         print(f"       Black level region: {metadata.black_level_region}")
         print(f"       White level region: {metadata.white_level_region}")
-        print(f"       Pixel threshold: {metadata.level_pixel_threshold*100:.3f}%")
+
+        # Get thresholds for each channel
+        thresholds = metadata.level_pixel_threshold
+
+        # Check if all thresholds are the same
+        if len(set(thresholds)) == 1:
+            print(f"       Pixel threshold: {thresholds[0]*100:.3f}%")
+        else:
+            print(f"       Pixel thresholds: R={thresholds[0]*100:.3f}% G={thresholds[1]*100:.3f}% B={thresholds[2]*100:.3f}%")
 
         result = np.empty_like(metadata.current_image, dtype=np.float32)
         max_val = np.iinfo(metadata.current_image.dtype).max
@@ -923,11 +931,14 @@ class LevelAdjustStage(Stage):
         for c, name in enumerate(['R', 'G', 'B']):
             channel = metadata.current_image[:, :, c].astype(np.float32)
 
+            # Get threshold for this channel
+            threshold = thresholds[c]
+
             # Calculate black point from black region
             black_point = self._compute_level_point(
                 black_pixels[:, c] if black_pixels is not None else channel.flatten(),
                 'black',
-                metadata.level_pixel_threshold,
+                threshold,
                 max_val
             )
 
@@ -935,7 +946,7 @@ class LevelAdjustStage(Stage):
             white_point = self._compute_level_point(
                 white_pixels[:, c] if white_pixels is not None else channel.flatten(),
                 'white',
-                metadata.level_pixel_threshold,
+                threshold,
                 max_val
             )
 
@@ -1276,6 +1287,54 @@ def parse_wb_ix(wb_ix_str: str) -> tuple:
     return n_clusters, wb_classes
 
 
+def parse_level_threshold(threshold_str: str, default: float = 0.0001) -> List[float]:
+    """Parse level threshold specification.
+
+    Args:
+        threshold_str: Threshold specification:
+                      - Single value: "0.001" → [0.001, 0.001, 0.001]
+                      - RGB format: "r0.001,g0.002,b0.003" → [0.001, 0.002, 0.003]
+                      - Missing channels use default value
+        default: Default threshold value for missing channels
+
+    Returns:
+        List of 3 thresholds [R, G, B]
+
+    Raises:
+        ValueError: If format is invalid
+    """
+    # Default values for each channel
+    thresholds = {'r': default, 'g': default, 'b': default}
+
+    # Check if it's a single number (no letters)
+    try:
+        single_value = float(threshold_str.strip())
+        return [single_value, single_value, single_value]
+    except ValueError:
+        pass  # Not a single number, try RGB format
+
+    # Parse RGB format: r0.001,g0.002,b0.003
+    parts = [p.strip() for p in threshold_str.split(',')]
+
+    for part in parts:
+        if not part:
+            continue
+
+        # Parse each part like "r0.001" or "g0.002" or "b0.003"
+        if len(part) < 2 or part[0].lower() not in 'rgb':
+            raise ValueError(f"Invalid threshold format: {threshold_str}. "
+                            f"Expected format: '0.001' or 'r0.001,g0.002,b0.003'")
+
+        channel = part[0].lower()
+        try:
+            value = float(part[1:])
+            thresholds[channel] = value
+        except ValueError:
+            raise ValueError(f"Invalid threshold value: {part}")
+
+    return [thresholds['r'], thresholds['g'], thresholds['b']]
+
+
 def generate_output_path(input_path: str, output_spec: Optional[str]) -> str:
     """Generate output file path from output specification.
 
@@ -1304,9 +1363,10 @@ def generate_output_path(input_path: str, output_spec: Optional[str]) -> str:
 
     # Generate short hash (8 hex chars)
     current_time = time.time()
+    short_hash = hex(int(current_time * 1000))[2:10]
 
     # Format with available variables
-    output_path = output_spec.format(name=name_without_ext, hash=current_time)
+    output_path = output_spec.format(name=name_without_ext, hash=short_hash)
 
     return output_path
 
@@ -1344,8 +1404,10 @@ Examples:
                         help='White balance color threshold (default: 30)')
     parser.add_argument('-l', '--level-threshold', type=float, default=0.99,
                         help='Level threshold percentile (default: 0.99)')
-    parser.add_argument('--level-pixel-threshold', type=float, default=0.0001,
-                        help='Level detection threshold (0.0001=0.01%%, 0.001=0.1%%, 0.01=1%%) (default: 0.0001)')
+    parser.add_argument('--level-pixel-threshold', type=str, default='0.0001',
+                        help='Level detection threshold. Single value (e.g., 0.001) for all channels, '
+                             'or RGB format (e.g., r0.001,g0.002,b0.003). Missing channels use default. '
+                             'Values: 0.0001=0.01%%, 0.001=0.1%% (default: 0.0001)')
     parser.add_argument('--black-level-region', type=str, default='border',
                         help='Black level detection region: border, center, or x,y,w,h (default: border)')
     parser.add_argument('--white-level-region', type=str, default='center',
@@ -1377,7 +1439,10 @@ Examples:
     metadata.border_specs = parse_border_specs(args.border)
     metadata.wb_threshold = args.wb_threshold
     metadata.level_threshold = args.level_threshold
-    metadata.level_pixel_threshold = args.level_pixel_threshold
+
+    # Parse level pixel threshold (single value or RGB format)
+    metadata.level_pixel_threshold = parse_level_threshold(args.level_pixel_threshold)
+
     metadata.black_level_region = args.black_level_region
     metadata.white_level_region = args.white_level_region
     metadata.center_rect_ratio = args.center_ratio
