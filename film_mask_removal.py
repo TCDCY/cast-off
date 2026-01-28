@@ -1333,7 +1333,7 @@ def parse_level_threshold(threshold_str: str, default: float = 0.0001) -> List[f
     return [thresholds['r'], thresholds['g'], thresholds['b']]
 
 
-def generate_output_path(input_path: str, output_spec: Optional[str]) -> str:
+def parse_output_specs(input_path: str, output_spec: Optional[str]) -> str:
     """Generate output file path from output specification.
 
     Args:
@@ -1359,12 +1359,11 @@ def generate_output_path(input_path: str, output_spec: Optional[str]) -> str:
     input_name = os.path.basename(input_path)
     name_without_ext = os.path.splitext(input_name)[0]
 
-    # Generate short hash (8 hex chars)
+    # Timestamp as hash
     current_time = time.time()
-    short_hash = hex(int(current_time * 1000))[2:10]
 
     # Format with available variables
-    output_path = output_spec.format(name=name_without_ext, hash=short_hash)
+    output_path = output_spec.format(name=name_without_ext, hash=current_time)
 
     return output_path
 
@@ -1429,7 +1428,7 @@ Examples:
     # Create metadata
     metadata = Metadata()
     metadata.raw_path = args.input
-    metadata.output_path = generate_output_path(args.input, args.output)
+    metadata.output_path = parse_output_specs(args.input, args.output)
     metadata.border_specs = parse_border_specs(args.border)
 
     # Parse level pixel threshold (single value or RGB format)
