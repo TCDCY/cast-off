@@ -406,28 +406,31 @@ class FilmMaskRemoval:
         overlay[border_mask] = [0, 255, 0]  # Green overlay for border
         img_border = cv2.addWeighted(img_border, 0.7, overlay, 0.3, 0)
 
-        # 2. Classification visualization
-        img_class = np.zeros((h, w, 3), dtype=np.uint8)
-        img_class[~border_mask] = [50, 50, 50]  # Gray for non-border
+        # 2. Classification visualization - start with original image
+        img_class = img_8bit.copy()
+
+        # Apply semi-transparent color overlay on border regions
+        color_overlay = np.zeros_like(img_8bit)
 
         # Map cluster labels back to image positions
         label_map = np.zeros((h, w), dtype=int)
         label_map[border_mask] = labels
 
-        # Color each cluster
+        # Apply color overlay for each cluster
         for i in range(min(self.n_clusters, len(CLUSTER_COLORS))):
             cluster_mask = label_map == i
-            img_class[cluster_mask] = CLUSTER_COLORS[i]
+            color_overlay[cluster_mask] = CLUSTER_COLORS[i]
 
-        # Highlight selected clusters for white balance
+        # Blend color overlay with original (50% original, 50% color)
+        img_class = cv2.addWeighted(img_class, 0.5, color_overlay, 0.5, 0)
+
+        # Highlight selected clusters for white balance (brighter, more saturated)
         for class_idx in self.wb_classes:
             if class_idx < self.n_clusters:
                 cluster_mask = label_map == class_idx
-                # Brighten selected clusters
+                # Add extra brightness to selected clusters
                 for c in range(3):
-                    channel = img_class[:, :, c]
-                    channel[cluster_mask] = np.minimum(255, channel[cluster_mask] + 100)
-                    img_class[:, :, c] = channel
+                    img_class[cluster_mask, c] = np.minimum(255, img_class[cluster_mask, c] + 80)
 
         # Add text labels
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -444,9 +447,9 @@ class FilmMaskRemoval:
         img_class_resized = cv2.resize(img_class, (new_w, new_h))
 
         # Add labels to resized images
-        cv2.putText(img_border_resized, 'Border Selection', (10, 40),
+        cv2.putText(img_border_resized, 'Border Selection (Green Overlay)', (10, 40),
                     font, font_scale, (0, 255, 0), thickness, cv2.LINE_AA)
-        cv2.putText(img_class_resized, f'Color Clusters (Using: {self.wb_classes})', (10, 40),
+        cv2.putText(img_class_resized, f'Color Clusters (WB: {self.wb_classes})', (10, 40),
                     font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
 
         # Add cluster legend
@@ -465,9 +468,11 @@ class FilmMaskRemoval:
         # Combine images side by side
         combined = np.hstack([img_border_resized, img_class_resized])
 
-        # Save if path provided
+        # Save if path provided (convert RGB to BGR for OpenCV)
         if vis_path:
-            cv2.imwrite(vis_path, cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
+            # combined is RGB, convert to BGR for saving
+            combined_bgr = cv2.cvtColor(combined, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(vis_path, combined_bgr)
             print(f"  Visualization saved: {vis_path}")
 
         return combined
