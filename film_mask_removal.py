@@ -12,9 +12,11 @@ import cv2
 import argparse
 import os
 import time
+import pickle
 from pathlib import Path
 from abc import ABC, abstractmethod
 from typing import Optional, List, Any, Dict
+from dataclasses import dataclass, fields
 
 # Color map for visualization (BGR format for OpenCV)
 CLUSTER_COLORS = [
@@ -446,9 +448,18 @@ def create_histogram_panel(
     return panel
 
 
-# TODO: any
+@dataclass
 class Preset:
-    pass
+    # WhiteBalanceComputeStage
+    wb_gains: Optional[np.ndarray] = None
+    # LevelAdjustStage
+    black_points: Optional[list[float]] = None
+    white_points: Optional[list[float]] = None
+    # ToneAdjustStage
+    tone_black_point: Optional[float] = None
+    tone_white_point: Optional[float] = None
+    tone_gamma: Optional[float] = None
+
 
 class Metadata:
     """Container for all intermediate data and results."""
@@ -523,26 +534,27 @@ class Metadata:
                     items.append(f"{key}={value}")
         return f"Metadata({', '.join(items)})"
 
+    def save(self, preset_path: str):
+        with open(preset_path, "wb") as f:
+            pickle.dump(self.preset, f)
+
+    def load(self, preset_path: str):
+        with open(preset_path, "rb") as f:
+            self.preset = pickle.load(f)
+
+        for field in fields(self.preset):
+            field_name = field.name
+            field_value = getattr(self.preset, field_name) 
+
+            print(f"Loading {field_name}...")
+            setattr(self, field_name, field_value)
+
 
 class Stage(ABC):
     """Abstract base class for pipeline stages."""
 
     def __init__(self, name: str = None):
         self.name = name or self.__class__.__name__
-
-    def __call__(self, metadata: Metadata) -> Metadata:
-        """
-        Execute the stage processing.
-
-        if apply_preset:
-            1. apply only
-        else:
-            1. preprocess
-            2. apply
-        """
-        metadata = self.preprocess(metadata)
-        metadata = self.apply(metadata)
-        return metadata
 
     @abstractmethod
     def preprocess(self, metadata: Metadata) -> Metadata:
@@ -563,7 +575,7 @@ class Stage(ABC):
         """Track apply to preset"""
         pass
 
-    # TODO: hard code vis
+    # TODO: refactor
     # @abstractmethod
     def vis(self, metadata: Metadata) -> Optional[np.ndarray]:
         """Generate visualization for this stage. Optional."""
@@ -865,7 +877,7 @@ class InvertStage(Stage):
         return metadata
 
 
-# TODO: review ?? 这个stage的意义? 单纯是可视化, 选区好像后面还得再来一次
+# TODO: review ?? useless standalone stage? since vis only
 class LevelRegionSelectStage(Stage):
     """Visualize level detection regions."""
 
@@ -1153,7 +1165,7 @@ class ToneAdjustStage(Stage):
         white_point = metadata.tone_white_point
         tone_gamma = metadata.tone_gamma
         img = metadata.current_image.astype(np.float32)
-        # TODO: max_val有时候hard code 有时候info, 直接hard code就行
+        # TODO: hard code max_val or use info
         max_val = 65535  # 16-bit
 
         # Apply tone adjustment to ENTIRE image by clipping and remapping to full range
@@ -1362,14 +1374,17 @@ class VisualizeStage(Stage):
 class Pipeline:
     """Processing pipeline that chains multiple stages."""
 
-    def __init__(self, stages: List[Stage], name: str = "Pipeline"):
+    def __init__(self, stages: List[Stage], name: str = "Pipeline", load_preset: bool = False):
         self.stages = stages
         self.name = name
+        self.load_preset = load_preset
 
     def __call__(self, metadata: Metadata) -> Metadata:
         """Execute all stages in sequence."""
         for stage in self.stages:
-            metadata = stage(metadata)
+            if not self.load_preset:
+                metadata = stage.preprocess(metadata)
+            metadata = stage.apply(metadata)
         return metadata
 
 
@@ -1514,6 +1529,8 @@ Examples:
     parser.add_argument('-o', '--output',
                         help='Output file path. Use {name} for filename, {hash} for timestamp hash. '
                              'Default: {hash}_{name}.jpg')
+    parser.add_argument('--save-preset', help='Save preset to file.', default=None)
+    parser.add_argument('--load-preset', help='Load preset to file.', default=None)
     parser.add_argument('-b', '--border', type=str, default='0.05',
                         help='Border ratios (default: 0.05, or u0.05,d0.05,l0.05,r0.05)')
     parser.add_argument('--wb-ix', type=str, default='3,0',
@@ -1593,18 +1610,28 @@ Examples:
         ToneAdjustStage("ToneAdjust"),
     ]
 
+    should_load_preset = False
+    should_visualize = args.visualize
+    if args.load_preset is not None:
+        metadata.load(args.load_preset)
+        should_load_preset = True
+        should_visualize = False
+
     # Add visualization stage if requested
-    if args.visualize:
+    if should_visualize:
         stages.append(VisualizeStage("Visualize"))
 
     stages.append(SaveStage("Save"))
 
-    pipeline = Pipeline(stages, "FilmMaskRemoval")
+    pipeline = Pipeline(stages, "FilmMaskRemoval", should_load_preset)
 
     # Execute
     print(f"Processing: {args.input}")
     metadata = pipeline(metadata)
     print("\nProcessing complete!")
+    if args.save_preset is not None:
+        print(f"\nSaveing preset to {args.save_preset}")
+        metadata.save(args.save_preset)
 
 
 if __name__ == '__main__':
