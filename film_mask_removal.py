@@ -56,6 +56,12 @@ class Metadata:
         # Parameters
         self.wb_threshold: float = 30
         self.level_threshold: float = 0.99
+        self.level_pixel_threshold: float = 0.0001  # Threshold for level detection (0.01% by default)
+
+        # Level detection regions
+        self.black_level_region: str = 'border'  # 'border' or 'center' or custom
+        self.white_level_region: str = 'center'  # 'border' or 'center' or custom
+        self.center_rect_ratio: float = 0.5  # Center region ratio (for 'center' detection)
 
         # Visualization
         self.vis_image: Optional[np.ndarray] = None
@@ -380,28 +386,205 @@ class InvertStage(Stage):
         return metadata
 
 
+class LevelRegionSelectStage(Stage):
+    """Visualize level detection regions."""
+
+    def __call__(self, metadata: Metadata) -> Metadata:
+        # Just pass through, visualization is done in vis() method
+        return metadata
+
+    def vis(self, metadata: Metadata) -> Optional[np.ndarray]:
+        """Visualize the regions used for black and white level detection."""
+        if metadata.current_image is None:
+            return None
+
+        img_8bit = (metadata.current_image / 256).astype(np.uint8)
+        h, w = img_8bit.shape[:2]
+
+        # Create visualization image
+        vis = img_8bit.copy()
+
+        # Create masks for visualization
+        black_region = self._get_region_mask(metadata, 'black', h, w)
+        white_region = self._get_region_mask(metadata, 'white', h, w)
+
+        # Overlay black region (red)
+        if black_region is not None:
+            overlay = np.zeros_like(vis)
+            overlay[black_region] = [0, 0, 255]  # Red for black level region
+            vis = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
+
+        # Overlay white region (blue)
+        if white_region is not None:
+            overlay = np.zeros_like(vis)
+            overlay[white_region] = [255, 0, 0]  # Blue for white level region
+            vis = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
+
+        # Add labels
+        cv2.putText(vis, f'Black Level: {metadata.black_level_region}', (10, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+        cv2.putText(vis, f'White Level: {metadata.white_level_region}', (10, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA)
+
+        # Add pixel count info
+        if black_region is not None:
+            black_count = np.sum(black_region)
+            cv2.putText(vis, f'Black: {black_count:,} pixels', (10, 120),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1, cv2.LINE_AA)
+        if white_region is not None:
+            white_count = np.sum(white_region)
+            cv2.putText(vis, f'White: {white_count:,} pixels', (10, 150),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1, cv2.LINE_AA)
+
+        return vis
+
+    def _get_region_mask(self, metadata: Metadata, level_type: str, h: int, w: int) -> np.ndarray:
+        """Get mask for level detection region."""
+        region = metadata.black_level_region if level_type == 'black' else metadata.white_level_region
+
+        if region == 'border':
+            return metadata.border_mask
+
+        elif region == 'center':
+            ratio = metadata.center_rect_ratio
+            h_start = int(h * (1 - ratio) / 2)
+            h_end = int(h * (1 + ratio) / 2)
+            w_start = int(w * (1 - ratio) / 2)
+            w_end = int(w * (1 + ratio) / 2)
+            mask = np.zeros((h, w), dtype=bool)
+            mask[h_start:h_end, w_start:w_end] = True
+            return mask
+
+        else:
+            # Custom region
+            try:
+                parts = [float(x) for x in region.split(',')]
+                if len(parts) == 4:
+                    x, y, rw, rh = parts
+                    h_start = int(h * y)
+                    h_end = int(h * (y + rh))
+                    w_start = int(w * x)
+                    w_end = int(w * (x + rw))
+                    mask = np.zeros((h, w), dtype=bool)
+                    mask[h_start:h_end, w_start:w_end] = True
+                    return mask
+            except:
+                pass
+
+            return None
+
+
 class LevelAdjustStage(Stage):
-    """Adjust RGB channel levels."""
+    """Adjust RGB channel levels using histogram-based detection from different regions."""
 
     def __call__(self, metadata: Metadata) -> Metadata:
         print(f"  [{self.name}] Adjusting levels...")
+        print(f"       Black level region: {metadata.black_level_region}")
+        print(f"       White level region: {metadata.white_level_region}")
+        print(f"       Pixel threshold: {metadata.level_pixel_threshold*100:.3f}%")
 
         result = np.empty_like(metadata.current_image, dtype=np.float32)
+        max_val = np.iinfo(metadata.current_image.dtype).max
 
-        for c in range(3):
+        # Extract pixels for black level detection
+        black_pixels = self._extract_region_pixels(metadata, 'black')
+        print(f"       Black region pixels: {black_pixels.shape[0] if black_pixels is not None else 'N/A'}")
+
+        # Extract pixels for white level detection
+        white_pixels = self._extract_region_pixels(metadata, 'white')
+        print(f"       White region pixels: {white_pixels.shape[0] if white_pixels is not None else 'N/A'}")
+
+        for c, name in enumerate(['R', 'G', 'B']):
             channel = metadata.current_image[:, :, c].astype(np.float32)
-            black_point = np.percentile(channel, (1 - metadata.level_threshold) * 100)
-            white_point = np.percentile(channel, metadata.level_threshold * 100)
 
-            if white_point - black_point < 1:
-                white_point = black_point + 1
+            # Calculate black point from black region
+            black_point = self._compute_level_point(
+                black_pixels[:, c] if black_pixels is not None else channel.flatten(),
+                'black',
+                metadata.level_pixel_threshold,
+                max_val
+            )
 
-            max_val = np.iinfo(metadata.current_image.dtype).max
+            # Calculate white point from white region
+            white_point = self._compute_level_point(
+                white_pixels[:, c] if white_pixels is not None else channel.flatten(),
+                'white',
+                metadata.level_pixel_threshold,
+                max_val
+            )
+
+            # Ensure valid range
+            if white_point - black_point < max_val * 0.02:
+                black_point = np.percentile(channel, 0.01)
+                white_point = np.percentile(channel, 99.99)
+
+            print(f"       {name}: black={black_point:.0f} white={white_point:.0f} range={white_point-black_point:.0f}")
+
+            # Stretch to full range
             stretched = (channel - black_point) / (white_point - black_point) * max_val
             result[:, :, c] = np.clip(stretched, 0, max_val)
 
         metadata.current_image = result.astype(metadata.current_image.dtype)
         return metadata
+
+    def _extract_region_pixels(self, metadata: Metadata, level_type: str) -> np.ndarray:
+        """Extract pixels from specified region for level detection."""
+        region = metadata.black_level_region if level_type == 'black' else metadata.white_level_region
+        h, w = metadata.current_image.shape[:2]
+
+        if region == 'border':
+            # Use existing border mask
+            if metadata.border_mask is None:
+                # Fallback to entire image
+                return metadata.current_image.reshape(-1, 3)
+            return metadata.current_image[metadata.border_mask]
+
+        elif region == 'center':
+            # Use center rectangle
+            ratio = metadata.center_rect_ratio
+            h_start = int(h * (1 - ratio) / 2)
+            h_end = int(h * (1 + ratio) / 2)
+            w_start = int(w * (1 - ratio) / 2)
+            w_end = int(w * (1 + ratio) / 2)
+
+            center_region = metadata.current_image[h_start:h_end, w_start:w_end, :]
+            return center_region.reshape(-1, 3)
+
+        else:
+            # Custom region: parse as "x,y,w,h" format (ratios 0-1)
+            try:
+                parts = [float(x) for x in region.split(',')]
+                if len(parts) == 4:
+                    x, y, rw, rh = parts
+                    h_start = int(h * y)
+                    h_end = int(h * (y + rh))
+                    w_start = int(w * x)
+                    w_end = int(w * (x + rw))
+
+                    custom_region = metadata.current_image[h_start:h_end, w_start:w_end, :]
+                    return custom_region.reshape(-1, 3)
+            except:
+                pass
+
+            # Fallback to entire image
+            return metadata.current_image.reshape(-1, 3)
+
+    def _compute_level_point(self, pixels: np.ndarray, level_type: str, threshold: float, max_val: float) -> float:
+        """Compute black or white point from histogram."""
+        hist, bin_edges = np.histogram(pixels, bins=512, range=(0, max_val))
+        total_pixels = pixels.size
+        level_threshold = total_pixels * threshold
+
+        if level_type == 'black':
+            # From low end
+            cumulative = np.cumsum(hist)
+            bin_idx = np.searchsorted(cumulative, level_threshold)
+            return bin_edges[bin_idx]
+        else:
+            # From high end
+            cumulative_from_top = np.cumsum(hist[::-1])
+            bin_idx = len(hist) - 1 - np.searchsorted(cumulative_from_top, level_threshold)
+            return bin_edges[bin_idx + 1]
 
 
 class SaveStage(Stage):
@@ -441,6 +624,12 @@ class VisualizeStage(Stage):
         vis_classify = classify_stage.vis(metadata)
         if vis_classify is not None:
             vis_images.append(vis_classify)
+
+        # Level region visualization
+        level_region_stage = LevelRegionSelectStage()
+        vis_level_region = level_region_stage.vis(metadata)
+        if vis_level_region is not None:
+            vis_images.append(vis_level_region)
 
         if len(vis_images) < 2:
             return metadata
@@ -539,7 +728,15 @@ Examples:
     parser.add_argument('-w', '--wb-threshold', type=float, default=30,
                         help='White balance color threshold (default: 30)')
     parser.add_argument('-l', '--level-threshold', type=float, default=0.99,
-                        help='Level threshold (default: 0.99)')
+                        help='Level threshold percentile (default: 0.99)')
+    parser.add_argument('--level-pixel-threshold', type=float, default=0.0001,
+                        help='Level detection threshold (0.0001=0.01%%, 0.001=0.1%%, 0.01=1%%) (default: 0.0001)')
+    parser.add_argument('--black-level-region', type=str, default='border',
+                        help='Black level detection region: border, center, or x,y,w,h (default: border)')
+    parser.add_argument('--white-level-region', type=str, default='center',
+                        help='White level detection region: border, center, or x,y,w,h (default: center)')
+    parser.add_argument('--center-ratio', type=float, default=0.5,
+                        help='Center region ratio for level detection (0.0-1.0, default: 0.5)')
     parser.add_argument('--debug', action='store_true',
                         help='Show debug information')
     parser.add_argument('--visualize', action='store_true',
@@ -554,6 +751,10 @@ Examples:
     metadata.border_specs = parse_border_specs(args.border)
     metadata.wb_threshold = args.wb_threshold
     metadata.level_threshold = args.level_threshold
+    metadata.level_pixel_threshold = args.level_pixel_threshold
+    metadata.black_level_region = args.black_level_region
+    metadata.white_level_region = args.white_level_region
+    metadata.center_rect_ratio = args.center_ratio
 
     n_clusters, wb_classes = parse_wb_ix(args.wb_ix)
     metadata.n_clusters = n_clusters
