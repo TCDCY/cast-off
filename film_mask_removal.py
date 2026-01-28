@@ -66,6 +66,14 @@ class Metadata:
         # Visualization
         self.vis_image: Optional[np.ndarray] = None
         self.vis_path: Optional[str] = None
+        self.vis_callbacks: List[callable] = []  # Visualization callbacks registered by stages
+
+    def register_vis(self, callback: callable):
+        """Register a visualization callback.
+
+        Callback should be a function that takes metadata and returns visualization image.
+        """
+        self.vis_callbacks.append(callback)
 
     def __repr__(self):
         items = []
@@ -73,8 +81,10 @@ class Metadata:
             if value is not None and not key.startswith('_'):
                 if isinstance(value, np.ndarray):
                     items.append(f"{key}=array({value.shape})")
+                elif isinstance(value, list) and key == 'vis_callbacks':
+                    items.append(f"{key}=[{len(value)} callbacks]")
                 elif isinstance(value, list):
-                    items.append(f"{key}={value}")
+                    items.append(f"{key}=list({len(value)})")
                 else:
                     items.append(f"{key}={value}")
         return f"Metadata({', '.join(items)})"
@@ -189,6 +199,10 @@ class BorderExtractStage(Stage):
             metadata.border_pixels = np.empty((0, 3), dtype=metadata.current_image.dtype)
 
         print(f"       Border pixels: {len(metadata.border_pixels)}")
+
+        # Register visualization callback
+        metadata.register_vis(self.vis)
+
         return metadata
 
     def vis(self, metadata: Metadata) -> Optional[np.ndarray]:
@@ -243,6 +257,10 @@ class ColorClassifyStage(Stage):
         metadata.clusters = clusters
 
         print(f"       Clusters: {metadata.n_clusters}, using {metadata.wb_classes} for WB")
+
+        # Register visualization callback
+        metadata.register_vis(self.vis)
+
         return metadata
 
     def vis(self, metadata: Metadata) -> Optional[np.ndarray]:
@@ -390,7 +408,8 @@ class LevelRegionSelectStage(Stage):
     """Visualize level detection regions."""
 
     def __call__(self, metadata: Metadata) -> Metadata:
-        # Just pass through, visualization is done in vis() method
+        # Register visualization callback
+        metadata.register_vis(self.vis)
         return metadata
 
     def vis(self, metadata: Metadata) -> Optional[np.ndarray]:
@@ -618,7 +637,7 @@ class SaveStage(Stage):
 
 
 class VisualizeStage(Stage):
-    """Generate combined visualization."""
+    """Generate combined visualization from registered callbacks."""
 
     def __call__(self, metadata: Metadata) -> Metadata:
         if metadata.vis_path is None:
@@ -626,31 +645,26 @@ class VisualizeStage(Stage):
 
         print(f"  [{self.name}] Creating visualization...")
 
-        # Get visualizations from stages
+        # Collect visualizations from registered callbacks
         vis_images = []
+        for callback in metadata.vis_callbacks:
+            vis_img = callback(metadata)
+            if vis_img is not None:
+                vis_images.append(vis_img)
 
-        # Border visualization
-        border_stage = BorderExtractStage()
-        vis_border = border_stage.vis(metadata)
-        if vis_border is not None:
-            vis_images.append(vis_border)
-
-        # Classification visualization
-        classify_stage = ColorClassifyStage()
-        vis_classify = classify_stage.vis(metadata)
-        if vis_classify is not None:
-            vis_images.append(vis_classify)
-
-        # Level region visualization
-        level_region_stage = LevelRegionSelectStage()
-        vis_level_region = level_region_stage.vis(metadata)
-        if vis_level_region is not None:
-            vis_images.append(vis_level_region)
-
-        if len(vis_images) < 2:
+        if len(vis_images) < 1:
+            print(f"       No visualizations to display")
             return metadata
 
-        # Resize and combine
+        if len(vis_images) == 1:
+            # Single visualization, save directly
+            combined_bgr = cv2.cvtColor(vis_images[0], cv2.COLOR_RGB2BGR)
+            cv2.imwrite(metadata.vis_path, combined_bgr)
+            print(f"       Visualization saved: {metadata.vis_path}")
+            metadata.vis_image = vis_images[0]
+            return metadata
+
+        # Resize and combine multiple visualizations
         h, w = vis_images[0].shape[:2]
         max_width = 2000
         scale = min(1.0, max_width / w)
@@ -788,12 +802,13 @@ Examples:
         WhiteBalanceComputeStage("WBCompute"),
         WhiteBalanceApplyStage("WBApply"),
         InvertStage("Invert"),
+        LevelRegionSelectStage("LevelRegionSelect"),
         LevelAdjustStage("LevelAdjust"),
     ]
 
-    # Add visualize stage if requested
+    # Add visualize stage at the end if requested
     if args.visualize:
-        stages.insert(3, VisualizeStage("Visualize"))
+        stages.append(VisualizeStage("Visualize"))
 
     stages.append(SaveStage("Save"))
 
