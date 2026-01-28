@@ -473,8 +473,6 @@ class Metadata:
         self.wb_gains: Optional[np.ndarray] = None
 
         # Parameters
-        self.wb_threshold: float = 30
-        self.level_threshold: float = 0.99
         self.level_pixel_threshold: List[float] = [0.0001, 0.0001, 0.0001]  # Per-channel thresholds [R, G, B]
 
         # Level detection regions
@@ -1400,10 +1398,6 @@ Examples:
                         help='Border ratios (default: 0.05, or u0.05,d0.05,l0.05,r0.05)')
     parser.add_argument('--wb-ix', type=str, default='3,0',
                         help='White balance clusters: n_clusters,class_idx1,... (default: 3,0)')
-    parser.add_argument('-w', '--wb-threshold', type=float, default=30,
-                        help='White balance color threshold (default: 30)')
-    parser.add_argument('-l', '--level-threshold', type=float, default=0.99,
-                        help='Level threshold percentile (default: 0.99)')
     parser.add_argument('--level-pixel-threshold', type=str, default='0.0001',
                         help='Level detection threshold. Single value (e.g., 0.001) for all channels, '
                              'or RGB format (e.g., r0.001,g0.002,b0.003). Missing channels use default. '
@@ -1437,8 +1431,6 @@ Examples:
     metadata.raw_path = args.input
     metadata.output_path = generate_output_path(args.input, args.output)
     metadata.border_specs = parse_border_specs(args.border)
-    metadata.wb_threshold = args.wb_threshold
-    metadata.level_threshold = args.level_threshold
 
     # Parse level pixel threshold (single value or RGB format)
     metadata.level_pixel_threshold = parse_level_threshold(args.level_pixel_threshold)
