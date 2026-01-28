@@ -570,21 +570,37 @@ class LevelAdjustStage(Stage):
             return metadata.current_image.reshape(-1, 3)
 
     def _compute_level_point(self, pixels: np.ndarray, level_type: str, threshold: float, max_val: float) -> float:
-        """Compute black or white point from histogram."""
+        """Compute black or white point from histogram.
+
+        Uses a robust approach:
+        1. Find the histogram peak (mode)
+        2. From the peak, extend outward until finding where count drops below threshold
+
+        Args:
+            pixels: 1D array of pixel values
+            level_type: 'black' or 'white'
+            threshold: Pixel count threshold (as fraction of total pixels)
+            max_val: Maximum pixel value (e.g., 65535 for 16-bit)
+        """
         hist, bin_edges = np.histogram(pixels, bins=512, range=(0, max_val))
         total_pixels = pixels.size
         level_threshold = total_pixels * threshold
 
+        # Find histogram peak
+        max_bin = np.argmax(hist)
+
         if level_type == 'black':
-            # From low end
-            cumulative = np.cumsum(hist)
-            bin_idx = np.searchsorted(cumulative, level_threshold)
-            return bin_edges[bin_idx]
+            # From peak, go left until count drops below threshold
+            for i in range(max_bin, -1, -1):
+                if hist[i] < level_threshold:
+                    return bin_edges[i + 1] if i < max_bin else bin_edges[i]
+            return bin_edges[0]
         else:
-            # From high end
-            cumulative_from_top = np.cumsum(hist[::-1])
-            bin_idx = len(hist) - 1 - np.searchsorted(cumulative_from_top, level_threshold)
-            return bin_edges[bin_idx + 1]
+            # From peak, go right until count drops below threshold
+            for i in range(max_bin, len(hist)):
+                if hist[i] < level_threshold:
+                    return bin_edges[i]
+            return bin_edges[-1]
 
 
 class SaveStage(Stage):
