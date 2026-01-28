@@ -1011,15 +1011,16 @@ class ToneAdjustStage(Stage):
         lum_region = 0.299 * region_pixels[:, 0] + 0.587 * region_pixels[:, 1] + 0.114 * region_pixels[:, 2]
 
         # Detect black and white points using histogram method
-        if metadata.tone_black_point is None:
-            black_point = self._compute_level_point(lum_region, 'black', metadata.tone_pixel_threshold, max_val)
-        else:
-            black_point = metadata.tone_black_point
+        black_point = self._compute_level_point(lum_region, 'black', metadata.tone_pixel_threshold, max_val)
+        white_point = self._compute_level_point(lum_region, 'white', metadata.tone_pixel_threshold, max_val)
 
-        if metadata.tone_white_point is None:
-            white_point = self._compute_level_point(lum_region, 'white', metadata.tone_pixel_threshold, max_val)
-        else:
+        if metadata.tone_black_point is not None:
+            black_point = metadata.tone_black_point
+            print(f"       Overwrite black point with {black_point}")
+
+        if metadata.tone_white_point is not None:
             white_point = metadata.tone_white_point
+            print(f"       Overwrite white point with {white_point}")
 
         print(f"       Luminance: black={black_point:.0f} white={white_point:.0f} gamma={metadata.tone_gamma:.2f}")
 
@@ -1360,7 +1361,7 @@ Examples:
     parser.add_argument('--tone-region', type=str, default='center',
                         choices=['border', 'center', 'manual'],
                         help='Region for tone detection (default: center)')
-    parser.add_argument('--tone-pixel-threshold', type=float, default=None,
+    parser.add_argument('--tone-pixel-threshold', type=float, default=0.05,
                         help='Tone detection threshold (0.0001=0.01%%, 0.001=0.1%%, 0.01=1%%)')
     parser.add_argument('--debug', action='store_true',
                         help='Show debug information')
@@ -1395,9 +1396,6 @@ Examples:
     n_clusters, wb_classes = parse_wb_ix(args.wb_ix)
     metadata.n_clusters = n_clusters
     metadata.wb_classes = wb_classes
-
-    assert bool(metadata.tone_white_point is not None or metadata.tone_black_point is not None) ^ bool(metadata.tone_pixel_threshold is not None), "Manual point and threshold should not be set at the same time."
-
 
     # Setup visualization path
     if args.visualize:
