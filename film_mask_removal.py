@@ -63,6 +63,9 @@ class Metadata:
         self.white_level_region: str = 'center'  # 'border' or 'center' or custom
         self.center_rect_ratio: float = 0.5  # Center region ratio (for 'center' detection)
 
+        # Detected level points (for visualization)
+        self.detected_levels: Optional[Dict[str, Dict[str, float]]] = None  # {'R': {'black': x, 'white': y}, ...}
+
         # Visualization
         self.vis_image: Optional[np.ndarray] = None
         self.vis_path: Optional[str] = None
@@ -430,14 +433,17 @@ class LevelRegionSelectStage(Stage):
         return metadata
 
     def _vis_with_image(self, img: np.ndarray, metadata: Metadata) -> Optional[np.ndarray]:
-        """Create visualization with specific image as background."""
+        """Create visualization with specific image as background and RGB histograms."""
         if img is None:
             return None
 
         img_8bit = (img / 256).astype(np.uint8)
         h, w = img_8bit.shape[:2]
 
-        # Create visualization image
+        # Calculate histogram height (20% of image height)
+        hist_height = int(h * 0.2)
+
+        # Create main image visualization
         vis = img_8bit.copy()
 
         # Create masks for visualization
@@ -457,22 +463,123 @@ class LevelRegionSelectStage(Stage):
             vis = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
 
         # Add labels
-        cv2.putText(vis, f'Black Level: {metadata.black_level_region}', (10, 40),
+        cv2.putText(vis, f'Black: {metadata.black_level_region}', (10, 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
-        cv2.putText(vis, f'White Level: {metadata.white_level_region}', (10, 80),
+        cv2.putText(vis, f'White: {metadata.white_level_region}', (10, 80),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA)
 
         # Add pixel count info
         if black_region is not None:
             black_count = np.sum(black_region)
-            cv2.putText(vis, f'Black: {black_count:,} pixels', (10, 120),
+            cv2.putText(vis, f'{black_count:,} px', (10, 120),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1, cv2.LINE_AA)
         if white_region is not None:
             white_count = np.sum(white_region)
-            cv2.putText(vis, f'White: {white_count:,} pixels', (10, 150),
+            cv2.putText(vis, f'{white_count:,} px', (10, 150),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1, cv2.LINE_AA)
 
-        return vis
+        # Create histogram panel (at the bottom, 20% height)
+        hist_panel = self._create_histogram_panel(img, metadata, hist_height, w)
+
+        # Combine image and histogram vertically
+        combined = np.vstack([vis, hist_panel])
+
+        return combined
+
+    def _create_histogram_panel(self, img: np.ndarray, metadata: Metadata, panel_height: int, panel_width: int) -> np.ndarray:
+        """Create histogram visualization panel at the bottom."""
+        panel = np.zeros((panel_height, panel_width, 3), dtype=np.uint8)
+        panel.fill(30)  # Dark gray background
+
+        # Histogram margins (adjusted for bottom layout)
+        margin_left = 60
+        margin_right = 20
+        margin_top = 25
+        margin_bottom = 35
+        hist_width = panel_width - margin_left - margin_right
+        hist_height = panel_height - margin_top - margin_bottom
+
+        # Calculate histograms for each channel
+        max_val = 65535  # 16-bit
+        colors = ['R', 'G', 'B']
+        bgr_colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0)]  # OpenCV uses BGR
+        max_count = 0
+
+        histograms = []
+        for c in range(3):
+            hist, _ = np.histogram(img[:, :, c], bins=512, range=(0, max_val))
+            histograms.append(hist)
+            max_count = max(max_count, np.max(hist))
+
+        # Draw title
+        cv2.putText(panel, 'RGB Histograms', (10, 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+
+        # Draw channel labels on the left
+        for c, (color_name, bgr_color) in enumerate(zip(colors, bgr_colors)):
+            cv2.putText(panel, color_name, (10, margin_top + c * 15 + 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, bgr_color, 1, cv2.LINE_AA)
+
+        line_thickness = 5
+        # Draw histograms
+        for c, (color_name, bgr_color) in enumerate(zip(colors, bgr_colors)):
+            hist = histograms[c]
+
+            # Draw histogram line
+            points = []
+            for i in range(len(hist)):
+                x = margin_left + int(i / len(hist) * hist_width)
+                y = margin_top + hist_height - int(hist[i] / max_count * hist_height * 0.85)
+                points.append((x, y))
+
+            # Draw polyline with thicker line
+            points = np.array(points, dtype=np.int32)
+            cv2.polylines(panel, [points], False, bgr_color, line_thickness)
+
+        mark_thickness = 10
+        # Draw detected level markers (triangles) - only if levels are available
+        if metadata.detected_levels is not None:
+            for c, color_name in enumerate(colors):
+                if color_name in metadata.detected_levels:
+                    levels = metadata.detected_levels[color_name]
+                    black_point = levels['black']
+                    white_point = levels['white']
+                    bgr_color = bgr_colors[c]
+
+                    # Draw black point marker (triangle pointing down)
+                    black_x = margin_left + int(black_point / max_val * hist_width)
+                    triangle_pts = [
+                        (black_x, margin_top + hist_height),
+                        (black_x - 6, margin_top + hist_height - 10),
+                        (black_x + 6, margin_top + hist_height - 10)
+                    ]
+                    pts = np.array(triangle_pts, dtype=np.int32)
+                    cv2.polylines(panel, [pts], True, bgr_color, mark_thickness)
+
+                    # Draw white point marker (triangle pointing down)
+                    white_x = margin_left + int(white_point / max_val * hist_width)
+                    triangle_pts = [
+                        (white_x, margin_top + hist_height),
+                        (white_x - 6, margin_top + hist_height - 10),
+                        (white_x + 6, margin_top + hist_height - 10)
+                    ]
+                    pts = np.array(triangle_pts, dtype=np.int32)
+                    cv2.polylines(panel, [pts], True, bgr_color, mark_thickness)
+
+        # Draw x-axis
+        cv2.line(panel, (margin_left, margin_top + hist_height),
+                 (margin_left + hist_width, margin_top + hist_height), (150, 150, 150), 1)
+
+        # Draw x-axis labels
+        for val in [0, 16384, 32768, 49152, 65535]:
+            x = margin_left + int(val / max_val * hist_width)
+            cv2.line(panel, (x, margin_top + hist_height),
+                     (x, margin_top + hist_height + 3), (150, 150, 150), 1)
+            label = str(val) if val > 0 else '0'
+            cv2.putText(panel, label, (x - 15, margin_top + hist_height + 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.3, (180, 180, 180), 1, cv2.LINE_AA)
+
+        return panel
 
     def _get_region_mask(self, metadata: Metadata, level_type: str, h: int, w: int) -> np.ndarray:
         """Get mask for level detection region."""
@@ -530,6 +637,9 @@ class LevelAdjustStage(Stage):
         white_pixels = self._extract_region_pixels(metadata, 'white')
         print(f"       White region pixels: {white_pixels.shape[0] if white_pixels is not None else 'N/A'}")
 
+        # Store detected levels for visualization
+        metadata.detected_levels = {}
+
         for c, name in enumerate(['R', 'G', 'B']):
             channel = metadata.current_image[:, :, c].astype(np.float32)
 
@@ -555,6 +665,9 @@ class LevelAdjustStage(Stage):
                 white_point = np.percentile(channel, 99.99)
 
             print(f"       {name}: black={black_point:.0f} white={white_point:.0f} range={white_point-black_point:.0f}")
+
+            # Save detected levels
+            metadata.detected_levels[name] = {'black': black_point, 'white': white_point}
 
             # Stretch to full range
             stretched = (channel - black_point) / (white_point - black_point) * max_val
