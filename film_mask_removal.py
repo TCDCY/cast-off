@@ -10,6 +10,18 @@ import cv2
 import argparse
 from pathlib import Path
 
+# Color map for visualization (BGR format for OpenCV)
+CLUSTER_COLORS = [
+    (0, 0, 255),      # Red
+    (0, 255, 0),      # Green
+    (255, 0, 0),      # Blue
+    (0, 255, 255),    # Yellow
+    (255, 0, 255),    # Magenta
+    (255, 255, 0),    # Cyan
+    (128, 0, 255),    # Purple
+    (255, 128, 0),    # Orange
+]
+
 
 class FilmMaskRemoval:
     """Film mask removal processor"""
@@ -119,7 +131,53 @@ class FilmMaskRemoval:
 
         return border_pixels
 
-    def classify_by_color(self, pixels: np.ndarray) -> list:
+    def extract_border_mask(self, image: np.ndarray) -> np.ndarray:
+        """
+        Extract border region as a binary mask
+
+        Args:
+            image: Input image
+
+        Returns:
+            Boolean mask of border pixels (same shape as image)
+        """
+        h, w = image.shape[:2]
+
+        # Get custom border ratios
+        u_ratio = self.border_specs.get('u', self.border_ratio)
+        d_ratio = self.border_specs.get('d', self.border_ratio)
+        l_ratio = self.border_specs.get('l', self.border_ratio)
+        r_ratio = self.border_specs.get('r', self.border_ratio)
+
+        border_h_top = int(h * u_ratio)
+        border_h_bottom = int(h * d_ratio)
+        border_w_left = int(w * l_ratio)
+        border_w_right = int(w * r_ratio)
+
+        # Create mask
+        mask = np.zeros((h, w), dtype=bool)
+
+        if border_h_top > 0:
+            mask[:border_h_top, :] = True
+
+        if border_h_bottom > 0:
+            mask[-border_h_bottom:, :] = True
+
+        if border_w_left > 0:
+            v_start = border_h_top if border_h_top > 0 else 0
+            v_end = h - border_h_bottom if border_h_bottom > 0 else h
+            if v_end > v_start:
+                mask[v_start:v_end, :border_w_left] = True
+
+        if border_w_right > 0:
+            v_start = border_h_top if border_h_top > 0 else 0
+            v_end = h - border_h_bottom if border_h_bottom > 0 else h
+            if v_end > v_start:
+                mask[v_start:v_end, -border_w_right:] = True
+
+        return mask
+
+    def classify_by_color(self, pixels: np.ndarray) -> tuple:
         """
         Classify border pixels by color characteristics into clusters
 
@@ -127,10 +185,13 @@ class FilmMaskRemoval:
             pixels: Border pixels (N, 3)
 
         Returns:
-            List of clusters, each containing pixels belonging to that cluster
+            Tuple of (clusters, labels):
+                - clusters: List of clusters, each containing pixels
+                - labels: Array of cluster indices for each pixel (N,)
         """
         if len(pixels) == 0:
-            return [np.empty((0, 3), dtype=pixels.dtype)] * self.n_clusters
+            empty = np.empty((0, 3), dtype=pixels.dtype)
+            return [empty] * self.n_clusters, np.array([], dtype=int)
 
         # Calculate brightness
         if pixels.dtype == np.uint16:
@@ -143,20 +204,22 @@ class FilmMaskRemoval:
 
         # Normalize features for clustering
         gray_norm = (gray - gray.min()) / (gray.max() - gray.min() + 1e-6)
-        std_norm = (color_std - color_std.min()) / (color_std.max() - color_std.min() + 1e-6)
 
         # Simple clustering: divide brightness range into equal intervals
-        # and filter by color consistency
-        clusters = []
         brightness_bins = np.linspace(0, 1, self.n_clusters + 1)
+
+        # Assign cluster labels
+        labels = np.zeros(len(pixels), dtype=int)
+        clusters = []
 
         for i in range(self.n_clusters):
             # Pixels in this brightness range
             mask = (gray_norm >= brightness_bins[i]) & (gray_norm < brightness_bins[i + 1])
+            labels[mask] = i
             cluster_pixels = pixels[mask]
             clusters.append(cluster_pixels)
 
-        return clusters
+        return clusters, labels
 
     def classify_by_color_old(self, pixels: np.ndarray) -> dict:
         """
@@ -209,7 +272,7 @@ class FilmMaskRemoval:
             White balance gains (R, G, B)
         """
         border_pixels = self.extract_border(image)
-        clusters = self.classify_by_color(border_pixels)
+        clusters, labels = self.classify_by_color(border_pixels)
 
         # Collect pixels from selected classes
         target_pixels_list = []
@@ -310,7 +373,106 @@ class FilmMaskRemoval:
 
         return result.astype(image.dtype)
 
-    def process(self, raw_path: str, output_path: str = None, debug: bool = False) -> np.ndarray:
+    def visualize_classification(self, image: np.ndarray, vis_path: str = None) -> np.ndarray:
+        """
+        Create visualization of border selection and color classification
+
+        Args:
+            image: Input image
+            vis_path: Path to save visualization (optional)
+
+        Returns:
+            Visualization image
+        """
+        # Convert to 8-bit for visualization
+        if image.dtype == np.uint16:
+            img_8bit = (image / 256).astype(np.uint8)
+        else:
+            img_8bit = image.copy()
+
+        h, w = img_8bit.shape[:2]
+
+        # Get border mask
+        border_mask = self.extract_border_mask(image)
+
+        # Get border pixels and classify
+        border_pixels = self.extract_border(image)
+        clusters, labels = self.classify_by_color(border_pixels)
+
+        # Create visualization images
+        # 1. Original with border overlay
+        img_border = img_8bit.copy()
+        overlay = np.zeros_like(img_8bit)
+        overlay[border_mask] = [0, 255, 0]  # Green overlay for border
+        img_border = cv2.addWeighted(img_border, 0.7, overlay, 0.3, 0)
+
+        # 2. Classification visualization
+        img_class = np.zeros((h, w, 3), dtype=np.uint8)
+        img_class[~border_mask] = [50, 50, 50]  # Gray for non-border
+
+        # Map cluster labels back to image positions
+        label_map = np.zeros((h, w), dtype=int)
+        label_map[border_mask] = labels
+
+        # Color each cluster
+        for i in range(min(self.n_clusters, len(CLUSTER_COLORS))):
+            cluster_mask = label_map == i
+            img_class[cluster_mask] = CLUSTER_COLORS[i]
+
+        # Highlight selected clusters for white balance
+        for class_idx in self.wb_classes:
+            if class_idx < self.n_clusters:
+                cluster_mask = label_map == class_idx
+                # Brighten selected clusters
+                for c in range(3):
+                    channel = img_class[:, :, c]
+                    channel[cluster_mask] = np.minimum(255, channel[cluster_mask] + 100)
+                    img_class[:, :, c] = channel
+
+        # Add text labels
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 1
+        thickness = 2
+
+        # Resize for display (max width 2000px)
+        max_width = 2000
+        scale = min(1.0, max_width / w)
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+
+        img_border_resized = cv2.resize(img_border, (new_w, new_h))
+        img_class_resized = cv2.resize(img_class, (new_w, new_h))
+
+        # Add labels to resized images
+        cv2.putText(img_border_resized, 'Border Selection', (10, 40),
+                    font, font_scale, (0, 255, 0), thickness, cv2.LINE_AA)
+        cv2.putText(img_class_resized, f'Color Clusters (Using: {self.wb_classes})', (10, 40),
+                    font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+
+        # Add cluster legend
+        for i in range(min(self.n_clusters, len(CLUSTER_COLORS))):
+            y_pos = 80 + i * 40
+            color = CLUSTER_COLORS[i]
+            label_text = f'Cluster {i}'
+            if i in self.wb_classes:
+                label_text += ' (WB)'
+
+            cv2.rectangle(img_class_resized, (10, y_pos - 20),
+                         (40, y_pos + 10), color, -1)
+            cv2.putText(img_class_resized, label_text, (50, y_pos),
+                        font, 0.7, (255, 255, 255), 1, cv2.LINE_AA)
+
+        # Combine images side by side
+        combined = np.hstack([img_border_resized, img_class_resized])
+
+        # Save if path provided
+        if vis_path:
+            cv2.imwrite(vis_path, cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))
+            print(f"  Visualization saved: {vis_path}")
+
+        return combined
+
+    def process(self, raw_path: str, output_path: str = None, debug: bool = False, visualize: bool = False) -> np.ndarray:
         """
         Complete processing pipeline
 
@@ -318,6 +480,7 @@ class FilmMaskRemoval:
             raw_path: RAW file path
             output_path: Output file path (optional)
             debug: Show debug information
+            visualize: Create classification visualization
 
         Returns:
             Processed image
@@ -325,7 +488,7 @@ class FilmMaskRemoval:
         print(f"Processing: {raw_path}")
 
         # 1. Load RAW
-        print("  [1/4] Loading RAW file...")
+        print("  [1/5] Loading RAW file...")
         image = self.load_raw(raw_path)
         print(f"       Image size: {image.shape}")
 
@@ -338,8 +501,15 @@ class FilmMaskRemoval:
             border_pixels = self.extract_border(image)
             print(f"       Border pixels: {len(border_pixels)}")
 
+        # 1.5. Create visualization if requested
+        if visualize:
+            print("  [2/5] Creating visualization...")
+            vis_path = output_path.rsplit('.', 1)[0] + '_vis.jpg' if output_path else None
+            if vis_path:
+                self.visualize_classification(image, vis_path)
+
         # 2. White balance
-        print("  [2/4] Computing and applying white balance...")
+        print("  [3/5] Computing and applying white balance...")
         wb_gains = self.compute_white_balance(image)
         print(f"       WB gains R={wb_gains[0]:.3f} G={wb_gains[1]:.3f} B={wb_gains[2]:.3f}")
         if debug:
@@ -347,11 +517,11 @@ class FilmMaskRemoval:
         image = self.apply_white_balance(image, wb_gains)
 
         # 3. Invert
-        print("  [3/4] Inverting image...")
+        print("  [4/5] Inverting image...")
         image = self.invert(image)
 
         # 4. Level adjustment
-        print("  [4/4] Adjusting levels...")
+        print("  [5/5] Adjusting levels...")
         image = self.adjust_levels(image)
 
         # Save
@@ -381,6 +551,9 @@ Examples:
 
   # Debug mode to see cluster information
   python film_mask_removal.py input.NEF -o output.jpg --debug
+
+  # Create visualization of border selection and classification
+  python film_mask_removal.py input.NEF -o output.jpg --visualize
         """
     )
     parser.add_argument('input', help='Input RAW file path')
@@ -395,6 +568,8 @@ Examples:
                         help='Level threshold (default: 0.99)')
     parser.add_argument('--debug', action='store_true',
                         help='Show debug information')
+    parser.add_argument('--visualize', action='store_true',
+                        help='Create classification visualization')
 
     args = parser.parse_args()
 
@@ -435,7 +610,7 @@ Examples:
     )
 
     # Process
-    result = processor.process(args.input, args.output, debug=args.debug)
+    result = processor.process(args.input, args.output, debug=args.debug, visualize=args.visualize)
 
     print("\nProcessing complete!")
 

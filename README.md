@@ -61,6 +61,22 @@ Show detailed processing information:
 python film_mask_removal.py input.NEF -o output.jpg --debug
 ```
 
+### Visualization
+
+Create a visualization showing border selection and color classification:
+
+```bash
+python film_mask_removal.py input.NEF -o output.jpg --visualize
+```
+
+This creates a side-by-side view:
+- **Left**: Original image with green overlay showing selected border regions
+- **Right**: Color classification with each cluster colored differently
+  - Selected clusters for white balance are highlighted with "(WB)"
+  - Clusters are indexed by brightness (0=darkest, N-1=brightest)
+
+The visualization is saved as `output_vis.jpg` (appends `_vis` to output filename).
+
 ### Parameters
 
 | Parameter | Description | Default |
@@ -70,6 +86,7 @@ python film_mask_removal.py input.NEF -o output.jpg --debug
 | `--wb-threshold` | White balance color threshold (0-255) | 30 |
 | `--level-threshold` | Level threshold percentile (0-1) | 0.99 |
 | `--debug` | Show debug information | false |
+| `--visualize` | Create classification visualization | false |
 
 ## Examples
 
@@ -84,6 +101,10 @@ python film_mask_removal.py ZFC_5837.NEF -o result.jpg \
 
 # Debug mode to see what's happening
 python film_mask_removal.py ZFC_5837.NEF -o result.jpg --debug
+
+# Create visualization to check border selection and classification
+python film_mask_removal.py ZFC_5837.NEF -o result.jpg \
+    --visualize --border u0.03,d0.03 --wb-ix 4,0,1
 
 # Batch processing
 for file in *.NEF; do
