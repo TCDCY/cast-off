@@ -27,6 +27,173 @@ CLUSTER_COLORS = [
 ]
 
 
+def extract_region_pixels(
+    image: np.ndarray,
+    region: str = 'border',
+    border_specs: Optional[Dict[str, float]] = None,
+    center_ratio: float = 0.5,
+) -> np.ndarray:
+    """Extract pixels from specified region of image.
+
+    Args:
+        image: Input image (H, W, C)
+        region: Region type - 'border', 'center', or 'manual'
+        border_specs: Border ratios for 'border' mode: {'u': 0.05, 'd': 0.05, 'l': 0.05, 'r': 0.05}
+        center_ratio: Center rectangle ratio for 'center' mode (0.0-1.0)
+
+    Returns:
+        Extracted pixels as (N, C) array
+    """
+    h, w = image.shape[:2]
+
+    if region == 'border':
+        # Extract borders
+        if border_specs is None:
+            border_specs = {'u': 0.05, 'd': 0.05, 'l': 0.05, 'r': 0.05}
+
+        u_ratio = border_specs.get('u', 0.05)
+        d_ratio = border_specs.get('d', 0.05)
+        l_ratio = border_specs.get('l', 0.05)
+        r_ratio = border_specs.get('r', 0.05)
+
+        border_h_top = int(h * u_ratio)
+        border_h_bottom = int(h * d_ratio)
+        border_w_left = int(w * l_ratio)
+        border_w_right = int(w * r_ratio)
+
+        border_pixels_list = []
+
+        if border_h_top > 0:
+            top = image[:border_h_top, :, :]
+            border_pixels_list.append(top.reshape(-1, 3))
+
+        if border_h_bottom > 0:
+            bottom = image[-border_h_bottom:, :, :]
+            border_pixels_list.append(bottom.reshape(-1, 3))
+
+        if border_w_left > 0:
+            v_start = border_h_top if border_h_top > 0 else 0
+            v_end = h - border_h_bottom if border_h_bottom > 0 else h
+            if v_end > v_start:
+                left = image[v_start:v_end, :border_w_left, :]
+                border_pixels_list.append(left.reshape(-1, 3))
+
+        if border_w_right > 0:
+            v_start = border_h_top if border_h_top > 0 else 0
+            v_end = h - border_h_bottom if border_h_bottom > 0 else h
+            if v_end > v_start:
+                right = image[v_start:v_end, -border_w_right:, :]
+                border_pixels_list.append(right.reshape(-1, 3))
+
+        if border_pixels_list:
+            return np.vstack(border_pixels_list)
+        else:
+            return np.empty((0, 3), dtype=image.dtype)
+
+    elif region == 'center':
+        # Extract center rectangle
+        h_start = int(h * (1 - center_ratio) / 2)
+        h_end = int(h * (1 + center_ratio) / 2)
+        w_start = int(w * (1 - center_ratio) / 2)
+        w_end = int(w * (1 + center_ratio) / 2)
+
+        center_region = image[h_start:h_end, w_start:w_end, :]
+        return center_region.reshape(-1, 3)
+
+    else:
+        # Custom region: parse as "x,y,w,h" format (ratios 0-1)
+        try:
+            parts = [float(x) for x in region.split(',')]
+            if len(parts) == 4:
+                x, y, rw, rh = parts
+                h_start = int(h * y)
+                h_end = int(h * (y + rh))
+                w_start = int(w * x)
+                w_end = int(w * (x + rw))
+
+                custom_region = image[h_start:h_end, w_start:w_end, :]
+                return custom_region.reshape(-1, 3)
+        except:
+            pass
+
+        # Fallback to entire image
+        return image.reshape(-1, 3)
+
+
+def create_region_mask(
+    h: int,
+    w: int,
+    region: str = 'border',
+    border_specs: Optional[Dict[str, float]] = None,
+    center_ratio: float = 0.5,
+) -> np.ndarray:
+    """Create a boolean mask for the specified region.
+
+    Args:
+        h: Image height
+        w: Image width
+        region: Region type - 'border', 'center', or 'manual'
+        border_specs: Border ratios for 'border' mode
+        center_ratio: Center rectangle ratio for 'center' mode
+
+    Returns:
+        Boolean mask (H, W)
+    """
+    mask = np.zeros((h, w), dtype=bool)
+
+    if region == 'border':
+        if border_specs is None:
+            border_specs = {'u': 0.05, 'd': 0.05, 'l': 0.05, 'r': 0.05}
+
+        u_ratio = border_specs.get('u', 0.05)
+        d_ratio = border_specs.get('d', 0.05)
+        l_ratio = border_specs.get('l', 0.05)
+        r_ratio = border_specs.get('r', 0.05)
+
+        border_h_top = int(h * u_ratio)
+        border_h_bottom = int(h * d_ratio)
+        border_w_left = int(w * l_ratio)
+        border_w_right = int(w * r_ratio)
+
+        if border_h_top > 0:
+            mask[:border_h_top, :] = True
+        if border_h_bottom > 0:
+            mask[-border_h_bottom:, :] = True
+        if border_w_left > 0:
+            v_start = border_h_top if border_h_top > 0 else 0
+            v_end = h - border_h_bottom if border_h_bottom > 0 else h
+            if v_end > v_start:
+                mask[v_start:v_end, :border_w_left] = True
+        if border_w_right > 0:
+            v_start = border_h_top if border_h_top > 0 else 0
+            v_end = h - border_h_bottom if border_h_bottom > 0 else h
+            if v_end > v_start:
+                mask[v_start:v_end, -border_w_right:] = True
+
+    elif region == 'center':
+        h_start = int(h * (1 - center_ratio) / 2)
+        h_end = int(h * (1 + center_ratio) / 2)
+        w_start = int(w * (1 - center_ratio) / 2)
+        w_end = int(w * (1 + center_ratio) / 2)
+        mask[h_start:h_end, w_start:w_end] = True
+
+    else:
+        # Custom region: parse as "x,y,w,h" format
+        try:
+            parts = [float(x) for x in region.split(',')]
+            if len(parts) == 4:
+                x, y, rw, rh = parts
+                h_start = int(h * y)
+                h_end = int(h * (y + rh))
+                w_start = int(w * x)
+                w_end = int(w * (x + rw))
+                mask[h_start:h_end, w_start:w_end] = True
+        except:
+            pass
+
+    return mask
+
+
 def create_histogram_panel(
     histograms: List[np.ndarray],
     panel_height: int,
@@ -281,65 +448,15 @@ class BorderExtractStage(Stage):
         border_specs = metadata.border_specs or {'u': 0.05, 'd': 0.05, 'l': 0.05, 'r': 0.05}
         metadata.border_specs = border_specs
 
-        u_ratio = border_specs.get('u', 0.05)
-        d_ratio = border_specs.get('d', 0.05)
-        l_ratio = border_specs.get('l', 0.05)
-        r_ratio = border_specs.get('r', 0.05)
+        # Use common function to create mask
+        metadata.border_mask = create_region_mask(h, w, 'border', border_specs)
 
-        border_h_top = int(h * u_ratio)
-        border_h_bottom = int(h * d_ratio)
-        border_w_left = int(w * l_ratio)
-        border_w_right = int(w * r_ratio)
-
-        # Create mask
-        mask = np.zeros((h, w), dtype=bool)
-
-        if border_h_top > 0:
-            mask[:border_h_top, :] = True
-        if border_h_bottom > 0:
-            mask[-border_h_bottom:, :] = True
-        if border_w_left > 0:
-            v_start = border_h_top if border_h_top > 0 else 0
-            v_end = h - border_h_bottom if border_h_bottom > 0 else h
-            if v_end > v_start:
-                mask[v_start:v_end, :border_w_left] = True
-        if border_w_right > 0:
-            v_start = border_h_top if border_h_top > 0 else 0
-            v_end = h - border_h_bottom if border_h_bottom > 0 else h
-            if v_end > v_start:
-                mask[v_start:v_end, -border_w_right:] = True
-
-        metadata.border_mask = mask
-
-        # Extract pixels
-        border_pixels_list = []
-
-        if border_h_top > 0:
-            top = metadata.current_image[:border_h_top, :, :]
-            border_pixels_list.append(top.reshape(-1, 3))
-
-        if border_h_bottom > 0:
-            bottom = metadata.current_image[-border_h_bottom:, :, :]
-            border_pixels_list.append(bottom.reshape(-1, 3))
-
-        if border_w_left > 0:
-            v_start = border_h_top if border_h_top > 0 else 0
-            v_end = h - border_h_bottom if border_h_bottom > 0 else h
-            if v_end > v_start:
-                left = metadata.current_image[v_start:v_end, :border_w_left, :]
-                border_pixels_list.append(left.reshape(-1, 3))
-
-        if border_w_right > 0:
-            v_start = border_h_top if border_h_top > 0 else 0
-            v_end = h - border_h_bottom if border_h_bottom > 0 else h
-            if v_end > v_start:
-                right = metadata.current_image[v_start:v_end, -border_w_right:, :]
-                border_pixels_list.append(right.reshape(-1, 3))
-
-        if border_pixels_list:
-            metadata.border_pixels = np.vstack(border_pixels_list)
-        else:
-            metadata.border_pixels = np.empty((0, 3), dtype=metadata.current_image.dtype)
+        # Use common function to extract pixels
+        metadata.border_pixels = extract_region_pixels(
+            metadata.current_image,
+            region='border',
+            border_specs=border_specs
+        )
 
         print(f"       Border pixels: {len(metadata.border_pixels)}")
 
@@ -652,36 +769,12 @@ class LevelRegionSelectStage(Stage):
         """Get mask for level detection region."""
         region = metadata.black_level_region if level_type == 'black' else metadata.white_level_region
 
-        if region == 'border':
+        # Use existing border mask for efficiency
+        if region == 'border' and metadata.border_mask is not None:
             return metadata.border_mask
 
-        elif region == 'center':
-            ratio = metadata.center_rect_ratio
-            h_start = int(h * (1 - ratio) / 2)
-            h_end = int(h * (1 + ratio) / 2)
-            w_start = int(w * (1 - ratio) / 2)
-            w_end = int(w * (1 + ratio) / 2)
-            mask = np.zeros((h, w), dtype=bool)
-            mask[h_start:h_end, w_start:w_end] = True
-            return mask
-
-        else:
-            # Custom region
-            try:
-                parts = [float(x) for x in region.split(',')]
-                if len(parts) == 4:
-                    x, y, rw, rh = parts
-                    h_start = int(h * y)
-                    h_end = int(h * (y + rh))
-                    w_start = int(w * x)
-                    w_end = int(w * (x + rw))
-                    mask = np.zeros((h, w), dtype=bool)
-                    mask[h_start:h_end, w_start:w_end] = True
-                    return mask
-            except:
-                pass
-
-            return None
+        # Use common function to create mask
+        return create_region_mask(h, w, region, metadata.border_specs, metadata.center_rect_ratio)
 
 
 class LevelAdjustStage(Stage):
@@ -746,44 +839,18 @@ class LevelAdjustStage(Stage):
     def _extract_region_pixels(self, metadata: Metadata, level_type: str) -> np.ndarray:
         """Extract pixels from specified region for level detection."""
         region = metadata.black_level_region if level_type == 'black' else metadata.white_level_region
-        h, w = metadata.current_image.shape[:2]
 
-        if region == 'border':
-            # Use existing border mask
-            if metadata.border_mask is None:
-                # Fallback to entire image
-                return metadata.current_image.reshape(-1, 3)
+        # Use common function to extract pixels
+        if region == 'border' and metadata.border_mask is not None:
+            # Use existing border mask for efficiency
             return metadata.current_image[metadata.border_mask]
 
-        elif region == 'center':
-            # Use center rectangle
-            ratio = metadata.center_rect_ratio
-            h_start = int(h * (1 - ratio) / 2)
-            h_end = int(h * (1 + ratio) / 2)
-            w_start = int(w * (1 - ratio) / 2)
-            w_end = int(w * (1 + ratio) / 2)
-
-            center_region = metadata.current_image[h_start:h_end, w_start:w_end, :]
-            return center_region.reshape(-1, 3)
-
-        else:
-            # Custom region: parse as "x,y,w,h" format (ratios 0-1)
-            try:
-                parts = [float(x) for x in region.split(',')]
-                if len(parts) == 4:
-                    x, y, rw, rh = parts
-                    h_start = int(h * y)
-                    h_end = int(h * (y + rh))
-                    w_start = int(w * x)
-                    w_end = int(w * (x + rw))
-
-                    custom_region = metadata.current_image[h_start:h_end, w_start:w_end, :]
-                    return custom_region.reshape(-1, 3)
-            except:
-                pass
-
-            # Fallback to entire image
-            return metadata.current_image.reshape(-1, 3)
+        return extract_region_pixels(
+            metadata.current_image,
+            region=region,
+            border_specs=metadata.border_specs if region == 'border' else None,
+            center_ratio=metadata.center_rect_ratio
+        )
 
     def _compute_level_point(self, pixels: np.ndarray, level_type: str, threshold: float, max_val: float) -> float:
         """Compute black or white point from histogram.
@@ -847,9 +914,9 @@ class ToneAdjustStage(Stage):
         else:
             white_point = metadata.tone_white_point
 
-        # # TODO: hard code
-        # # white_point = 20000
-        # black_point = 20000
+        # TODO: hard code
+        # white_point = 20000
+        black_point = 20000
 
         print(f"       Luminance: black={black_point:.0f} white={white_point:.0f} gamma={metadata.tone_gamma:.2f}")
 
