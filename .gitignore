@@ -1,3 +1,4 @@
 *.jpg
 *.NEF
 __pycache__
+*.pkl

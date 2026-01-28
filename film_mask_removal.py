@@ -1180,7 +1180,7 @@ class ToneAdjustStage(Stage):
             channel_norm = (channel_clipped - black_point) / (white_point - black_point)
 
             # Apply gamma correction
-            if tone_gamma != 1.0:
+            if tone_gamma is not None and tone_gamma != 1.0:
                 channel_norm = np.power(channel_norm, 1.0 / tone_gamma)
 
             # Remap to full range [0, max_val]
@@ -1549,7 +1549,7 @@ Examples:
                         help='Tone adjustment black point (auto-detect if not specified)')
     parser.add_argument('--tone-white', type=float, default=None,
                         help='Tone adjustment white point (auto-detect if not specified)')
-    parser.add_argument('--tone-gamma', type=float, default=1.0,
+    parser.add_argument('--tone-gamma', type=float, default=None,
                         help='Tone adjustment gamma correction (default: 1.0, <1.0 darker, >1.0 lighter)')
     parser.add_argument('--tone-region', type=str, default='center',
                         choices=['border', 'center', 'manual'],
@@ -1610,6 +1610,8 @@ Examples:
         ToneAdjustStage("ToneAdjust"),
     ]
 
+    # TODO: args can overwrite preset
+    # but how to handle default None things?
     should_load_preset = False
     should_visualize = args.visualize
     if args.load_preset is not None:
