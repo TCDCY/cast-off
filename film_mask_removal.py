@@ -38,7 +38,6 @@ class Metadata:
         # Images
         self.raw_image: Optional[np.ndarray] = None      # Original RAW (uint16)
         self.current_image: Optional[np.ndarray] = None  # Current working image
-        self.final_image: Optional[np.ndarray] = None    # Final result
 
         # Border info
         self.border_specs: Optional[Dict[str, float]] = None  # {'u': 0.05, 'd': 0.05, ...}
@@ -402,19 +401,18 @@ class LevelAdjustStage(Stage):
             result[:, :, c] = np.clip(stretched, 0, max_val)
 
         metadata.current_image = result.astype(metadata.current_image.dtype)
-        metadata.final_image = metadata.current_image.copy()
         return metadata
 
 
 class SaveStage(Stage):
-    """Save final result."""
+    """Save current image."""
 
     def __call__(self, metadata: Metadata) -> Metadata:
         if metadata.output_path is None:
             return metadata
 
         print(f"  [{self.name}] Saving result...")
-        img_8bit = (metadata.final_image / 256).astype(np.uint8)
+        img_8bit = (metadata.current_image / 256).astype(np.uint8)
         cv2.imwrite(metadata.output_path, cv2.cvtColor(img_8bit, cv2.COLOR_RGB2BGR))
         print(f"       Saved: {metadata.output_path}")
         return metadata
