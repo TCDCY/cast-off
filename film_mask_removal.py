@@ -200,10 +200,25 @@ class BorderExtractStage(Stage):
 
         print(f"       Border pixels: {len(metadata.border_pixels)}")
 
-        # Register visualization callback
-        metadata.register_vis(self.vis)
+        # Register visualization callback with current image snapshot
+        img_snapshot = metadata.current_image.copy()
+        metadata.register_vis(lambda md: self._vis_with_image(img_snapshot, md))
 
         return metadata
+
+    def _vis_with_image(self, img: np.ndarray, metadata: Metadata) -> Optional[np.ndarray]:
+        """Create visualization with specific image as background."""
+        img_8bit = (img / 256).astype(np.uint8)
+
+        overlay = np.zeros_like(img_8bit)
+        overlay[metadata.border_mask] = [0, 255, 0]
+        result = cv2.addWeighted(img_8bit, 0.7, overlay, 0.3, 0)
+
+        # Add label
+        cv2.putText(result, 'Border Selection (Green)', (10, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+
+        return result
 
     def vis(self, metadata: Metadata) -> Optional[np.ndarray]:
         """Visualize border selection."""
@@ -258,18 +273,19 @@ class ColorClassifyStage(Stage):
 
         print(f"       Clusters: {metadata.n_clusters}, using {metadata.wb_classes} for WB")
 
-        # Register visualization callback
-        metadata.register_vis(self.vis)
+        # Register visualization callback with current image snapshot
+        img_snapshot = metadata.current_image.copy()
+        metadata.register_vis(lambda md: self._vis_with_image(img_snapshot, md))
 
         return metadata
 
-    def vis(self, metadata: Metadata) -> Optional[np.ndarray]:
-        """Visualize color classification."""
+    def _vis_with_image(self, img: np.ndarray, metadata: Metadata) -> Optional[np.ndarray]:
+        """Create visualization with specific image as background."""
         if metadata.cluster_labels is None:
             return None
 
-        h, w = metadata.current_image.shape[:2]
-        img_8bit = (metadata.current_image / 256).astype(np.uint8)
+        h, w = img.shape[:2]
+        img_8bit = (img / 256).astype(np.uint8)
 
         # Create label_map following extraction order
         label_map = np.full((h, w), -1, dtype=int)
@@ -408,16 +424,17 @@ class LevelRegionSelectStage(Stage):
     """Visualize level detection regions."""
 
     def __call__(self, metadata: Metadata) -> Metadata:
-        # Register visualization callback
-        metadata.register_vis(self.vis)
+        # Register visualization callback with current image snapshot
+        img_snapshot = metadata.current_image.copy()
+        metadata.register_vis(lambda md: self._vis_with_image(img_snapshot, md))
         return metadata
 
-    def vis(self, metadata: Metadata) -> Optional[np.ndarray]:
-        """Visualize the regions used for black and white level detection."""
-        if metadata.current_image is None:
+    def _vis_with_image(self, img: np.ndarray, metadata: Metadata) -> Optional[np.ndarray]:
+        """Create visualization with specific image as background."""
+        if img is None:
             return None
 
-        img_8bit = (metadata.current_image / 256).astype(np.uint8)
+        img_8bit = (img / 256).astype(np.uint8)
         h, w = img_8bit.shape[:2]
 
         # Create visualization image
