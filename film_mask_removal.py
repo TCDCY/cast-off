@@ -120,6 +120,123 @@ def extract_region_pixels(
         return image.reshape(-1, 3)
 
 
+def find_level_point(
+    pixels: np.ndarray,
+    level_type: str,
+    threshold: float,
+    max_val: int = 65535,
+    method: str = 'cumulative'
+) -> float:
+    """Find black or white point from histogram using specified method.
+
+    Args:
+        pixels: 1D array of pixel values
+        level_type: 'black' or 'white'
+        threshold: Pixel count threshold (as fraction of total pixels)
+        max_val: Maximum pixel value (e.g., 65535 for 16-bit)
+        method: 'cumulative', 'peak', or 'first_peak'
+
+    Returns:
+        Detected level point value
+    """
+    hist, bin_edges = np.histogram(pixels, bins=512, range=(0, max_val))
+    total_pixels = pixels.size
+
+    if method == 'cumulative':
+        # Cumulative method: accumulate from edge until threshold
+        target_count = total_pixels * threshold
+
+        if level_type == 'black':
+            # From left, accumulate until reaching threshold
+            cumulative = 0
+            for i in range(len(hist)):
+                cumulative += hist[i]
+                if cumulative >= target_count:
+                    return bin_edges[i + 1] if i < len(hist) - 1 else bin_edges[i]
+            return bin_edges[-1]
+        else:
+            # From right, accumulate until reaching threshold
+            cumulative = 0
+            for i in range(len(hist) - 1, -1, -1):
+                cumulative += hist[i]
+                if cumulative >= target_count:
+                    return bin_edges[i]
+            return bin_edges[0]
+
+    elif method == 'peak':
+        # Peak method: find histogram peak and extend outward
+        level_threshold = total_pixels * threshold
+        max_bin = np.argmax(hist)
+
+        if level_type == 'black':
+            # From peak, go left until count drops below threshold
+            for i in range(max_bin, -1, -1):
+                if hist[i] < level_threshold:
+                    return bin_edges[i + 1] if i < max_bin else bin_edges[i]
+            return bin_edges[0]
+        else:
+            # From peak, go right until count drops below threshold
+            for i in range(max_bin, len(hist)):
+                if hist[i] < level_threshold:
+                    return bin_edges[i]
+            return bin_edges[-1]
+
+    else:  # method == 'first_peak'
+        # First peak method: find first significant peak from edge
+        level_threshold = total_pixels * threshold
+
+        if level_type == 'black':
+            # From left, find first peak, then go to its left edge
+            # Find first bin where count exceeds threshold
+            start_bin = 0
+            for i in range(len(hist)):
+                if hist[i] > level_threshold:
+                    start_bin = i
+                    break
+            else:
+                return bin_edges[0]
+
+            # Find local maximum around this region
+            peak_bin = start_bin
+            max_count = hist[start_bin]
+            search_range = 20  # bins to search for local peak
+            for i in range(start_bin, min(start_bin + search_range, len(hist))):
+                if hist[i] > max_count:
+                    max_count = hist[i]
+                    peak_bin = i
+
+            # From peak, go left until count drops below threshold
+            for i in range(peak_bin, -1, -1):
+                if hist[i] < level_threshold:
+                    return bin_edges[i + 1] if i < peak_bin else bin_edges[i]
+            return bin_edges[0]
+        else:
+            # From right, find first peak, then go to its right edge
+            # Find first bin where count exceeds threshold
+            start_bin = len(hist) - 1
+            for i in range(len(hist) - 1, -1, -1):
+                if hist[i] > level_threshold:
+                    start_bin = i
+                    break
+            else:
+                return bin_edges[-1]
+
+            # Find local maximum around this region
+            peak_bin = start_bin
+            max_count = hist[start_bin]
+            search_range = 20  # bins to search for local peak
+            for i in range(start_bin, max(start_bin - search_range, -1), -1):
+                if hist[i] > max_count:
+                    max_count = hist[i]
+                    peak_bin = i
+
+            # From peak, go right until count drops below threshold
+            for i in range(peak_bin, len(hist)):
+                if hist[i] < level_threshold:
+                    return bin_edges[i]
+            return bin_edges[-1]
+
+
 def create_region_mask(
     h: int,
     w: int,
@@ -364,6 +481,7 @@ class Metadata:
         self.center_rect_ratio: float = 0.5  # Center region ratio (for 'center' detection)
 
         # Tone adjustment parameters
+        self.tone_region: str = 'center'  # Region for tone detection ('border', 'center', 'manual')
         self.tone_black_point: Optional[float] = None  # Auto-detect if None
         self.tone_white_point: Optional[float] = None  # Auto-detect if None
         self.tone_gamma: float = 1.0  # Gamma correction (1.0 = no correction)
@@ -853,11 +971,9 @@ class LevelAdjustStage(Stage):
         )
 
     def _compute_level_point(self, pixels: np.ndarray, level_type: str, threshold: float, max_val: float) -> float:
-        """Compute black or white point from histogram.
+        """Compute black or white point from histogram using utility function.
 
-        Uses a robust approach:
-        1. Find the histogram peak (mode)
-        2. From the peak, extend outward until finding where count drops below threshold
+        Uses the peak method: find histogram peak and extend outward.
 
         Args:
             pixels: 1D array of pixel values
@@ -865,26 +981,7 @@ class LevelAdjustStage(Stage):
             threshold: Pixel count threshold (as fraction of total pixels)
             max_val: Maximum pixel value (e.g., 65535 for 16-bit)
         """
-        hist, bin_edges = np.histogram(pixels, bins=512, range=(0, max_val))
-        total_pixels = pixels.size
-        level_threshold = total_pixels * threshold
-
-        # Find histogram peak
-        max_bin = np.argmax(hist)
-
-        # TODO: review, 加速for循环?
-        if level_type == 'black':
-            # From peak, go left until count drops below threshold
-            for i in range(max_bin, -1, -1):
-                if hist[i] < level_threshold:
-                    return bin_edges[i + 1] if i < max_bin else bin_edges[i]
-            return bin_edges[0]
-        else:
-            # From peak, go right until count drops below threshold
-            for i in range(max_bin, len(hist)):
-                if hist[i] < level_threshold:
-                    return bin_edges[i]
-            return bin_edges[-1]
+        return find_level_point(pixels, level_type, threshold, max_val, method='peak')
 
 
 class ToneAdjustStage(Stage):
@@ -892,38 +989,42 @@ class ToneAdjustStage(Stage):
 
     def __call__(self, metadata: Metadata) -> Metadata:
         print(f"  [{self.name}] Adjusting tone (luminance)...")
+        print(f"       Tone detection region: {metadata.tone_region}")
         print(f"       Pixel threshold: {metadata.tone_pixel_threshold*100:.3f}%")
 
         img = metadata.current_image.astype(np.float32)
         max_val = 65535  # 16-bit
 
-        # Calculate luminance using standard weights (Rec. 601)
-        luminance = 0.299 * img[:, :, 0] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 2]
+        # Extract pixels from specified region for detection
+        region_pixels = extract_region_pixels(
+            img,
+            region=metadata.tone_region,
+            border_specs=metadata.border_specs if metadata.tone_region == 'border' else None,
+            center_ratio=metadata.center_rect_ratio
+        )
 
-        # Detect or use specified black/white points
-        # Use percentile method for simple x-axis clipping
-        lum_flat = luminance.flatten()
+        print(f"       Region pixels: {region_pixels.shape[0]}")
 
+        # Calculate luminance from region pixels
+        lum_region = 0.299 * region_pixels[:, 0] + 0.587 * region_pixels[:, 1] + 0.114 * region_pixels[:, 2]
+
+        # Detect black and white points using histogram method
         if metadata.tone_black_point is None:
-            black_point = np.percentile(lum_flat, metadata.tone_pixel_threshold * 100)
+            black_point = self._compute_level_point(lum_region, 'black', metadata.tone_pixel_threshold, max_val)
         else:
             black_point = metadata.tone_black_point
 
         if metadata.tone_white_point is None:
-            white_point = np.percentile(lum_flat, 100 - metadata.tone_pixel_threshold * 100)
+            white_point = self._compute_level_point(lum_region, 'white', metadata.tone_pixel_threshold, max_val)
         else:
             white_point = metadata.tone_white_point
-
-        # TODO: hard code
-        # white_point = 20000
-        black_point = 20000
 
         print(f"       Luminance: black={black_point:.0f} white={white_point:.0f} gamma={metadata.tone_gamma:.2f}")
 
         # Store detected levels for visualization
         metadata.detected_tone_levels = {'black': black_point, 'white': white_point}
 
-        # Apply tone adjustment by clipping and remapping to full range
+        # Apply tone adjustment to ENTIRE image by clipping and remapping to full range
         # For each channel: clip and stretch
         for c in range(3):
             channel = img[:, :, c]
@@ -1019,6 +1120,19 @@ class ToneAdjustStage(Stage):
             max_val=max_val,
             detected_levels=detected_levels,
         )
+
+    def _compute_level_point(self, pixels: np.ndarray, level_type: str, threshold: float, max_val: float) -> float:
+        """Compute black or white point from histogram using utility function.
+
+        Uses the cumulative method: accumulate from edge until threshold.
+
+        Args:
+            pixels: 1D array of pixel values
+            level_type: 'black' or 'white'
+            threshold: Pixel count threshold (as fraction of total pixels)
+            max_val: Maximum pixel value (e.g., 65535 for 16-bit)
+        """
+        return find_level_point(pixels, level_type, threshold, int(max_val), method='cumulative')
 
 
 class SaveStage(Stage):
@@ -1174,6 +1288,9 @@ Examples:
                         help='Tone adjustment white point (auto-detect if not specified)')
     parser.add_argument('--tone-gamma', type=float, default=1.0,
                         help='Tone adjustment gamma correction (default: 1.0, <1.0 darker, >1.0 lighter)')
+    parser.add_argument('--tone-region', type=str, default='center',
+                        choices=['border', 'center', 'manual'],
+                        help='Region for tone detection (default: center)')
     parser.add_argument('--tone-pixel-threshold', type=float, default=None,
                         help='Tone detection threshold (0.0001=0.01%%, 0.001=0.1%%, 0.01=1%%)')
     parser.add_argument('--debug', action='store_true',
@@ -1197,6 +1314,7 @@ Examples:
     metadata.tone_black_point = args.tone_black
     metadata.tone_white_point = args.tone_white
     metadata.tone_gamma = args.tone_gamma
+    metadata.tone_region = args.tone_region
     metadata.tone_pixel_threshold = args.tone_pixel_threshold
 
     n_clusters, wb_classes = parse_wb_ix(args.wb_ix)
