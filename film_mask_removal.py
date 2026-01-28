@@ -10,6 +10,8 @@ import numpy as np
 import rawpy
 import cv2
 import argparse
+import os
+import time
 from pathlib import Path
 from abc import ABC, abstractmethod
 from typing import Optional, List, Any, Dict
@@ -1273,6 +1275,41 @@ def parse_wb_ix(wb_ix_str: str) -> tuple:
     return n_clusters, wb_classes
 
 
+def generate_output_path(input_path: str, output_spec: Optional[str]) -> str:
+    """Generate output file path from output specification.
+
+    Args:
+        input_path: Input file path
+        output_spec: Output specification:
+                     - None: use default format '{name}_{hash}.jpg'
+                     - Contains '{name}' or '{hash}': format string
+                     - Otherwise: use as-is
+
+    Returns:
+        Generated output file path
+    """
+    # Default format
+    if output_spec is None:
+        output_spec = '{name}_{hash}.jpg'
+
+    # Check if output_spec contains variables
+    if '{' not in output_spec:
+        # No variables, use as-is
+        return output_spec
+
+    # Has variables, format it
+    input_name = os.path.basename(input_path)
+    name_without_ext = os.path.splitext(input_name)[0]
+
+    # Generate short hash (8 hex chars)
+    current_time = time.time()
+
+    # Format with available variables
+    output_path = output_spec.format(name=name_without_ext, hash=current_time)
+
+    return output_path
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Nikon RAW Film Mask Removal Tool',
@@ -1295,7 +1332,9 @@ Examples:
         """
     )
     parser.add_argument('input', help='Input RAW file path')
-    parser.add_argument('-o', '--output', help='Output file path')
+    parser.add_argument('-o', '--output',
+                        help='Output file path. Use {name} for filename, {hash} for timestamp hash. '
+                             'Default: {hash}_{name}.jpg')
     parser.add_argument('-b', '--border', type=str, default='0.05',
                         help='Border ratios (default: 0.05, or u0.05,d0.05,l0.05,r0.05)')
     parser.add_argument('--wb-ix', type=str, default='3,0',
@@ -1333,7 +1372,7 @@ Examples:
     # Create metadata
     metadata = Metadata()
     metadata.raw_path = args.input
-    metadata.output_path = args.output
+    metadata.output_path = generate_output_path(args.input, args.output)
     metadata.border_specs = parse_border_specs(args.border)
     metadata.wb_threshold = args.wb_threshold
     metadata.level_threshold = args.level_threshold
@@ -1345,7 +1384,13 @@ Examples:
     metadata.tone_white_point = args.tone_white
     metadata.tone_gamma = args.tone_gamma
     metadata.tone_region = args.tone_region
-    metadata.tone_pixel_threshold = args.tone_pixel_threshold
+    # Use default threshold if not specified and no manual points set
+    if args.tone_pixel_threshold is not None:
+        metadata.tone_pixel_threshold = args.tone_pixel_threshold
+    elif args.tone_black is None and args.tone_white is None:
+        metadata.tone_pixel_threshold = 0.001  # Default threshold
+    else:
+        metadata.tone_pixel_threshold = None  # Manual mode
 
     n_clusters, wb_classes = parse_wb_ix(args.wb_ix)
     metadata.n_clusters = n_clusters
@@ -1355,8 +1400,10 @@ Examples:
 
 
     # Setup visualization path
-    if args.visualize and args.output:
-        metadata.vis_path = args.output.rsplit('.', 1)[0] + '_vis.jpg'
+    if args.visualize:
+        # Generate vis path from output path
+        vis_output = metadata.output_path.rsplit('.', 1)[0] + '_vis.jpg'
+        metadata.vis_path = vis_output
 
     # Build pipeline
     stages = [
