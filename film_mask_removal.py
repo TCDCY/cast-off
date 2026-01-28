@@ -27,6 +27,139 @@ CLUSTER_COLORS = [
 ]
 
 
+def create_histogram_panel(
+    histograms: List[np.ndarray],
+    panel_height: int,
+    panel_width: int,
+    title: str = "Histogram",
+    channel_names: Optional[List[str]] = None,
+    colors: Optional[List[tuple]] = None,
+    max_val: int = 65535,
+    detected_levels: Optional[Dict[str, Dict[str, float]]] = None,
+) -> np.ndarray:
+    """Create a histogram visualization panel.
+
+    Args:
+        histograms: List of histogram arrays (one per channel)
+        panel_height: Height of the panel in pixels
+        panel_width: Width of the panel in pixels
+        title: Title for the histogram
+        channel_names: Optional list of channel names (e.g., ['R', 'G', 'B'])
+        colors: Optional list of BGR colors for each channel
+        max_val: Maximum pixel value (e.g., 65535 for 16-bit)
+        detected_levels: Optional dict of detected levels {'R': {'black': x, 'white': y}, ...}
+
+    Returns:
+        Panel image as numpy array
+    """
+    panel = np.zeros((panel_height, panel_width, 3), dtype=np.uint8)
+    panel.fill(30)  # Dark gray background
+
+    # Histogram margins
+    margin_left = 60
+    margin_right = 20
+    margin_top = 25
+    margin_bottom = 35
+    hist_width = panel_width - margin_left - margin_right
+    hist_height = panel_height - margin_top - margin_bottom
+
+    # Find max count across all histograms for normalization
+    max_count = 0
+    for hist in histograms:
+        max_count = max(max_count, np.max(hist))
+
+    # Default colors
+    if colors is None:
+        colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0)][:len(histograms)]
+
+    # Draw title
+    cv2.putText(panel, title, (10, 18),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+
+    # Draw y-axis grid lines and labels (actual pixel counts)
+    for y_ratio in [1.0, 0.5, 0.0]:
+        y = margin_top + int((1.0 - y_ratio) * hist_height * 0.85)
+        # Draw horizontal grid line
+        cv2.line(panel, (margin_left, y), (margin_left + hist_width, y), (80, 80, 80), 1)
+        # Draw label with actual pixel count
+        pixel_count = int(max_count * y_ratio)
+        if pixel_count >= 1000000:
+            label = f'{pixel_count/1000000:.1f}M'
+        elif pixel_count >= 1000:
+            label = f'{pixel_count/1000:.1f}K'
+        else:
+            label = f'{pixel_count}'
+        cv2.putText(panel, label, (5, y + 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.3, (150, 150, 150), 1, cv2.LINE_AA)
+
+    # Draw channel labels on the left (if provided)
+    if channel_names:
+        for i, name in enumerate(channel_names):
+            y_pos = margin_top + 20 + i * 15
+            color = colors[i] if i < len(colors) else (200, 200, 200)
+            cv2.putText(panel, name, (10, y_pos),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+
+    # Draw histograms
+    line_thickness = 5
+    for i, (hist, color) in enumerate(zip(histograms, colors)):
+        points = []
+        for j in range(len(hist)):
+            x = margin_left + int(j / len(hist) * hist_width)
+            y = margin_top + hist_height - int(hist[j] / max_count * hist_height * 0.85)
+            points.append((x, y))
+
+        points = np.array(points, dtype=np.int32)
+        cv2.polylines(panel, [points], False, color, line_thickness)
+
+    # Draw detected level markers (triangles) - if provided
+    marker_thickness = 10
+    if detected_levels:
+        for color, color_name in zip(colors, channel_names if channel_names else []):
+            if color_name not in detected_levels:
+                continue
+
+            levels = detected_levels[color_name]
+            if 'black' in levels and 'white' in levels:
+                black_point = levels['black']
+                white_point = levels['white']
+
+                # Draw black point marker
+                black_x = margin_left + int(black_point / max_val * hist_width)
+                triangle_pts = [
+                    (black_x, margin_top + hist_height),
+                    (black_x - 6, margin_top + hist_height - 10),
+                    (black_x + 6, margin_top + hist_height - 10)
+                ]
+                pts = np.array(triangle_pts, dtype=np.int32)
+                cv2.polylines(panel, [pts], True, color, marker_thickness)
+
+                # Draw white point marker
+                white_x = margin_left + int(white_point / max_val * hist_width)
+                triangle_pts = [
+                    (white_x, margin_top + hist_height),
+                    (white_x - 6, margin_top + hist_height - 10),
+                    (white_x + 6, margin_top + hist_height - 10)
+                ]
+                pts = np.array(triangle_pts, dtype=np.int32)
+                cv2.polylines(panel, [pts], True, color, marker_thickness)
+
+    # Draw x-axis
+    cv2.line(panel, (margin_left, margin_top + hist_height),
+             (margin_left + hist_width, margin_top + hist_height), (150, 150, 150), 1)
+
+    # Draw x-axis labels
+    for val in [0, 16384, 32768, 49152, 65535]:
+        x = margin_left + int(val / max_val * hist_width)
+        cv2.line(panel, (x, margin_top + hist_height),
+                 (x, margin_top + hist_height + 3), (150, 150, 150), 1)
+        label = str(val) if val > 0 else '0'
+        cv2.putText(panel, label, (x - 15, margin_top + hist_height + 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.3, (180, 180, 180), 1, cv2.LINE_AA)
+
+    return panel
+
+
 class Metadata:
     """Container for all intermediate data and results."""
 
@@ -63,8 +196,15 @@ class Metadata:
         self.white_level_region: str = 'center'  # 'border' or 'center' or custom
         self.center_rect_ratio: float = 0.5  # Center region ratio (for 'center' detection)
 
+        # Tone adjustment parameters
+        self.tone_black_point: Optional[float] = None  # Auto-detect if None
+        self.tone_white_point: Optional[float] = None  # Auto-detect if None
+        self.tone_gamma: float = 1.0  # Gamma correction (1.0 = no correction)
+        self.tone_pixel_threshold: float = 0.001  # Threshold for tone detection (0.1% by default)
+
         # Detected level points (for visualization)
         self.detected_levels: Optional[Dict[str, Dict[str, float]]] = None  # {'R': {'black': x, 'white': y}, ...}
+        self.detected_tone_levels: Optional[Dict[str, float]] = None  # {'black': x, 'white': y} for luminance
 
         # Visualization
         self.vis_image: Optional[np.ndarray] = None
@@ -487,99 +627,26 @@ class LevelRegionSelectStage(Stage):
         return combined
 
     def _create_histogram_panel(self, img: np.ndarray, metadata: Metadata, panel_height: int, panel_width: int) -> np.ndarray:
-        """Create histogram visualization panel at the bottom."""
-        panel = np.zeros((panel_height, panel_width, 3), dtype=np.uint8)
-        panel.fill(30)  # Dark gray background
-
-        # Histogram margins (adjusted for bottom layout)
-        margin_left = 60
-        margin_right = 20
-        margin_top = 25
-        margin_bottom = 35
-        hist_width = panel_width - margin_left - margin_right
-        hist_height = panel_height - margin_top - margin_bottom
+        """Create RGB histogram visualization panel."""
+        max_val = 65535  # 16-bit
 
         # Calculate histograms for each channel
-        max_val = 65535  # 16-bit
-        colors = ['R', 'G', 'B']
-        bgr_colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0)]  # OpenCV uses BGR
-        max_count = 0
-
         histograms = []
         for c in range(3):
             hist, _ = np.histogram(img[:, :, c], bins=512, range=(0, max_val))
             histograms.append(hist)
-            max_count = max(max_count, np.max(hist))
 
-        # Draw title
-        cv2.putText(panel, 'RGB Histograms', (10, 18),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-
-        # Draw channel labels on the left
-        for c, (color_name, bgr_color) in enumerate(zip(colors, bgr_colors)):
-            cv2.putText(panel, color_name, (10, margin_top + c * 15 + 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, bgr_color, 1, cv2.LINE_AA)
-
-        line_thickness = 5
-        # Draw histograms
-        for c, (color_name, bgr_color) in enumerate(zip(colors, bgr_colors)):
-            hist = histograms[c]
-
-            # Draw histogram line
-            points = []
-            for i in range(len(hist)):
-                x = margin_left + int(i / len(hist) * hist_width)
-                y = margin_top + hist_height - int(hist[i] / max_count * hist_height * 0.85)
-                points.append((x, y))
-
-            # Draw polyline with thicker line
-            points = np.array(points, dtype=np.int32)
-            cv2.polylines(panel, [points], False, bgr_color, line_thickness)
-
-        mark_thickness = 10
-        # Draw detected level markers (triangles) - only if levels are available
-        if metadata.detected_levels is not None:
-            for c, color_name in enumerate(colors):
-                if color_name in metadata.detected_levels:
-                    levels = metadata.detected_levels[color_name]
-                    black_point = levels['black']
-                    white_point = levels['white']
-                    bgr_color = bgr_colors[c]
-
-                    # Draw black point marker (triangle pointing down)
-                    black_x = margin_left + int(black_point / max_val * hist_width)
-                    triangle_pts = [
-                        (black_x, margin_top + hist_height),
-                        (black_x - 6, margin_top + hist_height - 10),
-                        (black_x + 6, margin_top + hist_height - 10)
-                    ]
-                    pts = np.array(triangle_pts, dtype=np.int32)
-                    cv2.polylines(panel, [pts], True, bgr_color, mark_thickness)
-
-                    # Draw white point marker (triangle pointing down)
-                    white_x = margin_left + int(white_point / max_val * hist_width)
-                    triangle_pts = [
-                        (white_x, margin_top + hist_height),
-                        (white_x - 6, margin_top + hist_height - 10),
-                        (white_x + 6, margin_top + hist_height - 10)
-                    ]
-                    pts = np.array(triangle_pts, dtype=np.int32)
-                    cv2.polylines(panel, [pts], True, bgr_color, mark_thickness)
-
-        # Draw x-axis
-        cv2.line(panel, (margin_left, margin_top + hist_height),
-                 (margin_left + hist_width, margin_top + hist_height), (150, 150, 150), 1)
-
-        # Draw x-axis labels
-        for val in [0, 16384, 32768, 49152, 65535]:
-            x = margin_left + int(val / max_val * hist_width)
-            cv2.line(panel, (x, margin_top + hist_height),
-                     (x, margin_top + hist_height + 3), (150, 150, 150), 1)
-            label = str(val) if val > 0 else '0'
-            cv2.putText(panel, label, (x - 15, margin_top + hist_height + 15),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.3, (180, 180, 180), 1, cv2.LINE_AA)
-
-        return panel
+        # Use common histogram drawing function
+        return create_histogram_panel(
+            histograms=histograms,
+            panel_height=panel_height,
+            panel_width=panel_width,
+            title='RGB Histograms',
+            channel_names=['R', 'G', 'B'],
+            colors=[(0, 0, 255), (0, 255, 0), (255, 0, 0)],  # BGR format
+            max_val=max_val,
+            detected_levels=metadata.detected_levels,
+        )
 
     def _get_region_mask(self, metadata: Metadata, level_type: str, h: int, w: int) -> np.ndarray:
         """Get mask for level detection region."""
@@ -738,6 +805,7 @@ class LevelAdjustStage(Stage):
         # Find histogram peak
         max_bin = np.argmax(hist)
 
+        # TODO: review, 加速for循环?
         if level_type == 'black':
             # From peak, go left until count drops below threshold
             for i in range(max_bin, -1, -1):
@@ -750,6 +818,140 @@ class LevelAdjustStage(Stage):
                 if hist[i] < level_threshold:
                     return bin_edges[i]
             return bin_edges[-1]
+
+
+class ToneAdjustStage(Stage):
+    """Adjust image tone using luminance level adjustment (after RGB level adjustment)."""
+
+    def __call__(self, metadata: Metadata) -> Metadata:
+        print(f"  [{self.name}] Adjusting tone (luminance)...")
+        print(f"       Pixel threshold: {metadata.tone_pixel_threshold*100:.3f}%")
+
+        img = metadata.current_image.astype(np.float32)
+        max_val = 65535  # 16-bit
+
+        # Calculate luminance using standard weights (Rec. 601)
+        luminance = 0.299 * img[:, :, 0] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 2]
+
+        # Detect or use specified black/white points
+        # Use percentile method for simple x-axis clipping
+        lum_flat = luminance.flatten()
+
+        if metadata.tone_black_point is None:
+            black_point = np.percentile(lum_flat, metadata.tone_pixel_threshold * 100)
+        else:
+            black_point = metadata.tone_black_point
+
+        if metadata.tone_white_point is None:
+            white_point = np.percentile(lum_flat, 100 - metadata.tone_pixel_threshold * 100)
+        else:
+            white_point = metadata.tone_white_point
+
+        # # TODO: hard code
+        # # white_point = 20000
+        # black_point = 20000
+
+        print(f"       Luminance: black={black_point:.0f} white={white_point:.0f} gamma={metadata.tone_gamma:.2f}")
+
+        # Store detected levels for visualization
+        metadata.detected_tone_levels = {'black': black_point, 'white': white_point}
+
+        # Apply tone adjustment by clipping and remapping to full range
+        # For each channel: clip and stretch
+        for c in range(3):
+            channel = img[:, :, c]
+
+            # Clip to detected range
+            channel_clipped = np.clip(channel, black_point, white_point)
+
+            # Normalize to [0, 1]
+            channel_norm = (channel_clipped - black_point) / (white_point - black_point)
+
+            # Apply gamma correction
+            if metadata.tone_gamma != 1.0:
+                channel_norm = np.power(channel_norm, 1.0 / metadata.tone_gamma)
+
+            # Remap to full range [0, max_val]
+            result_channel = channel_norm * max_val
+
+            img[:, :, c] = result_channel
+
+        metadata.current_image = np.clip(img, 0, max_val).astype(metadata.current_image.dtype)
+
+        # Register visualization callback
+        img_snapshot = metadata.current_image.copy()
+        metadata.register_vis(lambda md: self._vis_with_image(img_snapshot, md))
+
+        return metadata
+
+    def _vis_with_image(self, img: np.ndarray, metadata: Metadata) -> Optional[np.ndarray]:
+        """Create tone adjustment visualization."""
+        if img is None or metadata.detected_tone_levels is None:
+            return None
+
+        img_8bit = (img / 256).astype(np.uint8)
+        h, w = img_8bit.shape[:2]
+
+        # Calculate histogram height (25% of image height)
+        hist_height = int(h * 0.25)
+
+        # Create main image visualization
+        vis = img_8bit.copy()
+
+        # Add title
+        cv2.putText(vis, 'Tone Adjustment (Luminance)', (10, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+
+        # Add parameters
+        black = metadata.detected_tone_levels['black']
+        white = metadata.detected_tone_levels['white']
+        gamma = metadata.tone_gamma
+        cv2.putText(vis, f'Black: {black:.0f} White: {white:.0f} Gamma: {gamma:.2f}', (10, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1, cv2.LINE_AA)
+
+        # Create luminance histogram panel
+        hist_panel = self._create_luminance_histogram_panel(img, metadata, hist_height, w)
+
+        # Combine image and histogram vertically
+        combined = np.vstack([vis, hist_panel])
+
+        return combined
+
+    def _create_luminance_histogram_panel(self, img: np.ndarray, metadata: Metadata,
+                                          panel_height: int, panel_width: int) -> np.ndarray:
+        """Create luminance histogram visualization panel."""
+        max_val = 65535
+
+        # Calculate luminance
+        img_float = img.astype(np.float32)
+        luminance = 0.299 * img_float[:, :, 0] + 0.587 * img_float[:, :, 1] + 0.114 * img_float[:, :, 2]
+
+        # Calculate histogram
+        hist, _ = np.histogram(luminance, bins=512, range=(0, max_val))
+
+        # Convert detected_tone_levels to format expected by create_histogram_panel
+        # detected_tone_levels = {'black': x, 'white': y}
+        # Need: {'L': {'black': x, 'white': y}}
+        detected_levels = None
+        if metadata.detected_tone_levels is not None:
+            detected_levels = {
+                'L': {
+                    'black': metadata.detected_tone_levels['black'],
+                    'white': metadata.detected_tone_levels['white']
+                }
+            }
+
+        # Use common histogram drawing function
+        return create_histogram_panel(
+            histograms=[hist],
+            panel_height=panel_height,
+            panel_width=panel_width,
+            title='Luminance Histogram',
+            channel_names=['L'],
+            colors=[(128, 128, 128)],  # Gray for luminance
+            max_val=max_val,
+            detected_levels=detected_levels,
+        )
 
 
 class SaveStage(Stage):
@@ -831,6 +1033,8 @@ def parse_border_specs(border_str: str) -> Dict[str, float]:
     """Parse border specification string."""
     border_specs = {}
 
+    # TODO: refact: split?
+
     if ',' in border_str or any(c in border_str for c in 'udlr'):
         for part in border_str.replace(' ', ',').split(','):
             if part:
@@ -897,6 +1101,14 @@ Examples:
                         help='White level detection region: border, center, or x,y,w,h (default: center)')
     parser.add_argument('--center-ratio', type=float, default=0.5,
                         help='Center region ratio for level detection (0.0-1.0, default: 0.5)')
+    parser.add_argument('--tone-black', type=float, default=None,
+                        help='Tone adjustment black point (auto-detect if not specified)')
+    parser.add_argument('--tone-white', type=float, default=None,
+                        help='Tone adjustment white point (auto-detect if not specified)')
+    parser.add_argument('--tone-gamma', type=float, default=1.0,
+                        help='Tone adjustment gamma correction (default: 1.0, <1.0 darker, >1.0 lighter)')
+    parser.add_argument('--tone-pixel-threshold', type=float, default=None,
+                        help='Tone detection threshold (0.0001=0.01%%, 0.001=0.1%%, 0.01=1%%)')
     parser.add_argument('--debug', action='store_true',
                         help='Show debug information')
     parser.add_argument('--visualize', action='store_true',
@@ -915,10 +1127,17 @@ Examples:
     metadata.black_level_region = args.black_level_region
     metadata.white_level_region = args.white_level_region
     metadata.center_rect_ratio = args.center_ratio
+    metadata.tone_black_point = args.tone_black
+    metadata.tone_white_point = args.tone_white
+    metadata.tone_gamma = args.tone_gamma
+    metadata.tone_pixel_threshold = args.tone_pixel_threshold
 
     n_clusters, wb_classes = parse_wb_ix(args.wb_ix)
     metadata.n_clusters = n_clusters
     metadata.wb_classes = wb_classes
+
+    assert bool(metadata.tone_white_point is not None or metadata.tone_black_point is not None) ^ bool(metadata.tone_pixel_threshold is not None), "Manual point and threshold should not be set at the same time."
+
 
     # Setup visualization path
     if args.visualize and args.output:
@@ -934,9 +1153,10 @@ Examples:
         InvertStage("Invert"),
         LevelRegionSelectStage("LevelRegionSelect"),
         LevelAdjustStage("LevelAdjust"),
+        ToneAdjustStage("ToneAdjust"),
     ]
 
-    # Add visualize stage at the end if requested
+    # Add visualization stage if requested
     if args.visualize:
         stages.append(VisualizeStage("Visualize"))
 
