@@ -409,12 +409,57 @@ class FilmMaskRemoval:
         # 2. Classification visualization - start with original image
         img_class = img_8bit.copy()
 
+        # Create label_map by following the same extraction order
+        label_map = np.full((h, w), -1, dtype=int)
+
+        # Get border ratios
+        u_ratio = self.border_specs.get('u', self.border_ratio)
+        d_ratio = self.border_specs.get('d', self.border_ratio)
+        l_ratio = self.border_specs.get('l', self.border_ratio)
+        r_ratio = self.border_specs.get('r', self.border_ratio)
+
+        border_h_top = int(h * u_ratio)
+        border_h_bottom = int(h * d_ratio)
+        border_w_left = int(w * l_ratio)
+        border_w_right = int(w * r_ratio)
+
+        # Fill label_map in the same order as extract_border
+        label_idx = 0
+
+        # Top border
+        if border_h_top > 0:
+            for y in range(border_h_top):
+                for x in range(w):
+                    label_map[y, x] = labels[label_idx]
+                    label_idx += 1
+
+        # Bottom border
+        if border_h_bottom > 0:
+            for y in range(h - border_h_bottom, h):
+                for x in range(w):
+                    label_map[y, x] = labels[label_idx]
+                    label_idx += 1
+
+        # Left border (exclude corners)
+        if border_w_left > 0:
+            v_start = border_h_top if border_h_top > 0 else 0
+            v_end = h - border_h_bottom if border_h_bottom > 0 else h
+            for y in range(v_start, v_end):
+                for x in range(border_w_left):
+                    label_map[y, x] = labels[label_idx]
+                    label_idx += 1
+
+        # Right border (exclude corners)
+        if border_w_right > 0:
+            v_start = border_h_top if border_h_top > 0 else 0
+            v_end = h - border_h_bottom if border_h_bottom > 0 else h
+            for y in range(v_start, v_end):
+                for x in range(w - border_w_right, w):
+                    label_map[y, x] = labels[label_idx]
+                    label_idx += 1
+
         # Apply semi-transparent color overlay on border regions
         color_overlay = np.zeros_like(img_8bit)
-
-        # Map cluster labels back to image positions
-        label_map = np.zeros((h, w), dtype=int)
-        label_map[border_mask] = labels
 
         # Apply color overlay for each cluster
         for i in range(min(self.n_clusters, len(CLUSTER_COLORS))):
