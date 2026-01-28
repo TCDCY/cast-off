@@ -1360,7 +1360,7 @@ def parse_output_specs(input_path: str, output_spec: Optional[str]) -> str:
     name_without_ext = os.path.splitext(input_name)[0]
 
     # Timestamp as hash
-    current_time = time.time()
+    current_time = int(time.time())
 
     # Format with available variables
     output_path = output_spec.format(name=name_without_ext, hash=current_time)
