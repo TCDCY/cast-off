@@ -1122,7 +1122,7 @@ class LevelAdjustStage(Stage):
                 white_pixels[:, c] if white_pixels is not None else channel.flatten(), "white", threshold, max_val
             )
             if white_point < black_point:
-                print(f"       Auto tone failed.")
+                print(f"       RGB Auto tone failed.")
                 black_point = 0
                 white_point = 65535
 
@@ -1227,6 +1227,11 @@ class ToneAdjustStage(Stage):
         # Detect black and white points using histogram method
         black_point = self._compute_level_point(lum_region, "black", metadata.config.tone_pixel_threshold, max_val)
         white_point = self._compute_level_point(lum_region, "white", metadata.config.tone_pixel_threshold, max_val)
+
+        if white_point < black_point:
+            print(f"       L Auto tone failed.")
+            black_point = 0
+            white_point = 65535
 
         if metadata.config.tone_black_point is not None:
             print(f"       Overwrite black point {black_point} with {metadata.config.tone_black_point}")
