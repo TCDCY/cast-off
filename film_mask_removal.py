@@ -1109,12 +1109,6 @@ class LevelAdjustStage(Stage):
                 white_pixels[:, c] if white_pixels is not None else channel.flatten(), "white", threshold, max_val
             )
 
-            # TODO: review?? useless??
-            # Ensure valid range
-            if white_point - black_point < max_val * 0.02:
-                black_point = np.percentile(channel, 0.01)
-                white_point = np.percentile(channel, 99.99)
-
             # Overwrite level point if specified.
             if metadata.config.level_black_point[c] is not None:
                 print(
@@ -1135,11 +1129,6 @@ class LevelAdjustStage(Stage):
 
             black_points.append(black_point)
             white_points.append(white_point)
-
-            # TODO: remove
-            # # Stretch to full range
-            # stretched = (channel - black_point) / (white_point - black_point) * max_val
-            # result[:, :, c] = np.clip(stretched, 0, max_val)
 
         metadata.state.black_points = black_points
         metadata.state.white_points = white_points
@@ -1495,24 +1484,21 @@ class Pipeline:
         return metadata
 
 
-def parse_border_specs(border_str: str) -> Dict[str, float]:
+def parse_border_specs(border_str: str, default: float = 0.0) -> Dict[str, float]:
     """Parse border specification string."""
-    border_specs = {}
+    border_specs = {"u": default, "d": default, "l": default, "r": default}
 
-    # TODO: refact: split?
-
-    if "," in border_str or any(c in border_str for c in "udlr"):
-        for part in border_str.replace(" ", ",").split(","):
+    if "," in border_str:
+        parts = [p.strip() for p in border_str.split(",")]
+        for part in parts:
             if part:
                 direction = part[0].lower()
+                # up, down, left, right
                 if direction in "udlr":
                     value = float(part[1:])
                     border_specs[direction] = value
-
-        # Fill missing directions with 0
-        for direction in "udlr":
-            if direction not in border_specs:
-                border_specs[direction] = 0.0
+            else:
+                raise ValueError(f"Invalid command: {part}")
     else:
         ratio = float(border_str)
         border_specs = {"u": ratio, "d": ratio, "l": ratio, "r": ratio}
