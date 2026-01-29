@@ -29,6 +29,8 @@ CLUSTER_COLORS = [
     (128, 0, 255),  # Purple
     (255, 128, 0),  # Orange
 ]
+font_thickness = 3
+font_scale = 1
 
 
 def extract_region_pixels(
@@ -329,7 +331,7 @@ def create_histogram_panel(
         panel_width: Width of the panel in pixels
         title: Title for the histogram
         channel_names: Optional list of channel names (e.g., ['R', 'G', 'B'])
-        colors: Optional list of BGR colors for each channel
+        colors: Optional list of RGB colors for each channel
         max_val: Maximum pixel value (e.g., 65535 for 16-bit)
         detected_levels: Optional dict of detected levels {'R': {'black': x, 'white': y}, ...}
 
@@ -354,10 +356,12 @@ def create_histogram_panel(
 
     # Default colors
     if colors is None:
-        colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0)][: len(histograms)]
+        colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255)][: len(histograms)]
 
     # Draw title
-    cv2.putText(panel, title, (10, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.putText(
+        panel, title, (10, 18), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness, cv2.LINE_AA
+    )
 
     # Draw y-axis grid lines and labels (actual pixel counts)
     for y_ratio in [1.0, 0.5, 0.0]:
@@ -372,17 +376,21 @@ def create_histogram_panel(
             label = f"{pixel_count/1000:.1f}K"
         else:
             label = f"{pixel_count}"
-        cv2.putText(panel, label, (5, y + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (150, 150, 150), 1, cv2.LINE_AA)
+        cv2.putText(
+            panel, label, (5, y + 5), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (150, 150, 150), font_thickness, cv2.LINE_AA
+        )
 
     # Draw channel labels on the left (if provided)
     if channel_names:
         for i, name in enumerate(channel_names):
             y_pos = margin_top + 20 + i * 15
             color = colors[i] if i < len(colors) else (200, 200, 200)
-            cv2.putText(panel, name, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+            cv2.putText(
+                panel, name, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, font_thickness, cv2.LINE_AA
+            )
 
     # Draw histograms
-    line_thickness = 5
+    line_thickness = 10
     for i, (hist, color) in enumerate(zip(histograms, colors)):
         points = []
         for j in range(len(hist)):
@@ -394,7 +402,7 @@ def create_histogram_panel(
         cv2.polylines(panel, [points], False, color, line_thickness)
 
     # Draw detected level markers (triangles) - if provided
-    marker_thickness = 10
+    marker_thickness = 30
     if detected_levels:
         for color, color_name in zip(colors, channel_names if channel_names else []):
             if color_name not in detected_levels:
@@ -444,9 +452,9 @@ def create_histogram_panel(
             label,
             (x - 15, margin_top + hist_height + 15),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.3,
+            font_scale,
             (180, 180, 180),
-            1,
+            font_thickness,
             cv2.LINE_AA,
         )
 
@@ -703,7 +711,14 @@ class BorderExtractStage(Stage):
 
         # Add label
         cv2.putText(
-            result, "Border Selection (Green)", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA
+            result,
+            "Border Selection (Green)",
+            (10, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            (0, 255, 0),
+            font_thickness,
+            cv2.LINE_AA,
         )
 
         return result
@@ -832,9 +847,9 @@ class ColorClassifyStage(Stage):
             f"Color Clusters (WB: {metadata.config.wb_classes})",
             (10, 40),
             cv2.FONT_HERSHEY_SIMPLEX,
-            1,
+            font_scale,
             (255, 255, 255),
-            2,
+            font_thickness,
             cv2.LINE_AA,
         )
 
@@ -847,7 +862,16 @@ class ColorClassifyStage(Stage):
                 label_text += " (WB)"
 
             cv2.rectangle(result, (10, y_pos - 20), (40, y_pos + 10), color, -1)
-            cv2.putText(result, label_text, (50, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(
+                result,
+                label_text,
+                (50, y_pos),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                font_scale,
+                (255, 255, 255),
+                font_thickness,
+                cv2.LINE_AA,
+            )
 
         return result
 
@@ -969,9 +993,9 @@ class LevelRegionSelectStage(Stage):
             f"Black: {metadata.config.black_level_region}",
             (10, 40),
             cv2.FONT_HERSHEY_SIMPLEX,
-            1,
+            font_scale,
             (0, 0, 255),
-            2,
+            font_thickness,
             cv2.LINE_AA,
         )
         cv2.putText(
@@ -979,9 +1003,9 @@ class LevelRegionSelectStage(Stage):
             f"White: {metadata.config.white_level_region}",
             (10, 80),
             cv2.FONT_HERSHEY_SIMPLEX,
-            1,
+            font_scale,
             (255, 0, 0),
-            2,
+            font_thickness,
             cv2.LINE_AA,
         )
 
@@ -989,12 +1013,26 @@ class LevelRegionSelectStage(Stage):
         if black_region is not None:
             black_count = np.sum(black_region)
             cv2.putText(
-                vis, f"{black_count:,} px", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1, cv2.LINE_AA
+                vis,
+                f"{black_count:,} px",
+                (10, 120),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                font_scale,
+                (200, 200, 200),
+                font_thickness,
+                cv2.LINE_AA,
             )
         if white_region is not None:
             white_count = np.sum(white_region)
             cv2.putText(
-                vis, f"{white_count:,} px", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1, cv2.LINE_AA
+                vis,
+                f"{white_count:,} px",
+                (10, 150),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                font_scale,
+                (200, 200, 200),
+                font_thickness,
+                cv2.LINE_AA,
             )
 
         # Create histogram panel (at the bottom, 20% height)
@@ -1024,7 +1062,7 @@ class LevelRegionSelectStage(Stage):
             panel_width=panel_width,
             title="RGB Histograms",
             channel_names=["R", "G", "B"],
-            colors=[(0, 0, 255), (0, 255, 0), (255, 0, 0)],  # BGR format
+            colors=[(255, 0, 0), (0, 255, 0), (0, 0, 255)],
             max_val=max_val,
             detected_levels=metadata.state.detected_levels,
         )
@@ -1258,8 +1296,8 @@ class ToneAdjustStage(Stage):
         img_8bit = (img / 256).astype(np.uint8)
         h, w = img_8bit.shape[:2]
 
-        # Calculate histogram height (25% of image height)
-        hist_height = int(h * 0.25)
+        # Calculate histogram height (20% of image height)
+        hist_height = int(h * 0.20)
 
         # Create main image visualization
         vis = img_8bit.copy()
@@ -1275,7 +1313,14 @@ class ToneAdjustStage(Stage):
 
         # Add title
         cv2.putText(
-            vis, "Tone Adjustment (Luminance)", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA
+            vis,
+            "Tone Adjustment (Luminance)",
+            (10, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            (255, 255, 255),
+            font_thickness,
+            cv2.LINE_AA,
         )
 
         # Add region label
@@ -1284,9 +1329,9 @@ class ToneAdjustStage(Stage):
             f"Region: {metadata.config.tone_region}",
             (10, 80),
             cv2.FONT_HERSHEY_SIMPLEX,
-            1,
+            font_scale,
             (0, 255, 0),
-            2,
+            font_thickness,
             cv2.LINE_AA,
         )
 
@@ -1294,7 +1339,14 @@ class ToneAdjustStage(Stage):
         if tone_region is not None:
             tone_count = np.sum(tone_region)
             cv2.putText(
-                vis, f"{tone_count:,} px", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1, cv2.LINE_AA
+                vis,
+                f"{tone_count:,} px",
+                (10, 120),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                font_scale,
+                (200, 200, 200),
+                font_thickness,
+                cv2.LINE_AA,
             )
 
         # Add parameters
@@ -1306,9 +1358,9 @@ class ToneAdjustStage(Stage):
             f"Black: {black:.0f} White: {white:.0f} Gamma: {gamma:.2f}",
             (10, 150),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
+            font_scale,
             (200, 200, 200),
-            1,
+            font_thickness,
             cv2.LINE_AA,
         )
 
