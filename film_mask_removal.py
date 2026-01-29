@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Nikon RAW Film Mask Removal Script
 Process: Base white balance -> Invert -> RGB level adjustment
