@@ -455,11 +455,13 @@ def create_histogram_panel(
 
 @dataclass
 class Preset:
-    # WhiteBalanceComputeStage
+    """Data to save/load between runs - the actual useful processing parameters."""
+
+    # WhiteBalanceApplyStage
     wb_gains: Optional[np.ndarray] = None
     # LevelAdjustStage
-    black_points: Optional[list[float]] = None
-    white_points: Optional[list[float]] = None
+    black_points: Optional[List[float]] = None
+    white_points: Optional[List[float]] = None
     # ToneAdjustStage
     tone_black_point: Optional[float] = None
     tone_white_point: Optional[float] = None
@@ -468,74 +470,102 @@ class Preset:
 
 @dataclass
 class State:
+    """Runtime state during pipeline execution - not saved."""
+
+    # Original and working images
     raw_image: Optional[np.ndarray] = None  # Original RAW (uint16)
     current_image: Optional[np.ndarray] = None  # Current working image
+
+    # Border extraction
     border_mask: Optional[np.ndarray] = None
     border_pixels: Optional[np.ndarray] = None
+
+    # Color classification
     cluster_labels: Optional[np.ndarray] = None
     clusters: Optional[List[np.ndarray]] = None
 
+    # Computed values
+    wb_gains: Optional[np.ndarray] = None
+    black_points: Optional[List[float]] = None
+    white_points: Optional[List[float]] = None
+    tone_black_point: Optional[float] = None
+    tone_white_point: Optional[float] = None
+
+    # Detected levels for visualization
+    # {'R': {'black': x, 'white': y}, ...}
+    detected_levels: Optional[Dict[str, Dict[str, float]]] = None
+    # {'black': x, 'white': y}
+    detected_tone_levels: Optional[Dict[str, float]] = None
+
+
+@dataclass
+class Config:
+    """Read-only configuration parameters."""
+
+    # Input/Output paths
+    raw_path: str
+    output_path: str
+
+    # Border extraction
+    border_specs: Dict[str, float]  # {'u': 0.05, 'd': 0.05, 'l': 0.05, 'r': 0.05}
+
+    # Color classification
+    n_clusters: int = 3
+    wb_classes: Optional[List[int]] = None  # Should default to [0]
+
+    # Level detection
+    level_pixel_threshold: Optional[List[float]] = None  # Should default to [0.0001, 0.0001, 0.0001]
+    level_white_point: Optional[List[Optional[int]]] = None  # Should default to [None, None, None]
+    level_black_point: Optional[List[Optional[int]]] = None  # Should default to [None, None, None]
+    black_level_region: str = "border"
+    white_level_region: str = "center"
+    center_rect_ratio: float = 0.5
+
+    # Tone adjustment
+    tone_region: str = "center"
+    tone_black_point: Optional[float] = None
+    tone_white_point: Optional[float] = None
+    tone_gamma: float = 1.0
+    tone_pixel_threshold: float = 0.001
+
+    # Visualization
+    vis_path: Optional[str] = None
+
+    def __post_init__(self):
+        """Set default values for optional fields."""
+        if self.wb_classes is None:
+            self.wb_classes = [0]
+        if self.level_pixel_threshold is None:
+            self.level_pixel_threshold = [0.0001, 0.0001, 0.0001]
+        if self.level_white_point is None:
+            self.level_white_point = [None, None, None]
+        if self.level_black_point is None:
+            self.level_black_point = [None, None, None]
+
 
 class Metadata:
-    """Container for all intermediate data and results."""
+    """Container for config, state, and preset.
 
-    # TODO:
-    # 1. args
-    # 2. state
-    def __init__(self, args):
+    Usage:
+        - config: Read-only configuration parameters (from command-line args)
+        - state: Runtime state during pipeline execution (not saved)
+        - preset: Save/load data between runs (actual useful parameters)
+    """
+
+    def __init__(self, config: Config):
         """
-        1. config
-        2. state
-        3. preset
+        Initialize Metadata with a Config object.
 
-        TODO: NOTE
-
-
+        Args:
+            config: Configuration object with all parameters
         """
-        self.config = args
+        self.config = config
         self.state = State()
-
-        # Input/Output
-        self.raw_path: Optional[str] = None
-        self.output_path: Optional[str] = None
-
-        # Border info
-        self.border_specs: Optional[Dict[str, float]] = None  # {'u': 0.05, 'd': 0.05, ...}
-
-        # Classification
-        self.n_clusters: int = 3
-        self.wb_classes: List[int] = [0]
-
-        # White balance
-        self.wb_gains: Optional[np.ndarray] = None
-
-        # Parameters
-        self.level_pixel_threshold: List[float] = [0.0001, 0.0001, 0.0001]  # Per-channel thresholds [R, G, B]
-        self.level_white_point: List[Optional[int]] = [None, None, None]  # Per-channel level point [R, G, B]
-        self.level_black_point: List[Optional[int]] = [None, None, None]  # Per-channel level point [R, G, B]
-
-        # Level detection regions
-        self.black_level_region: str = "border"  # 'border' or 'center' or custom
-        self.white_level_region: str = "center"  # 'border' or 'center' or custom
-        self.center_rect_ratio: float = 0.5  # Center region ratio (for 'center' detection)
-
-        # Tone adjustment parameters
-        self.tone_region: str = "center"  # Region for tone detection ('border', 'center', 'manual')
-        self.tone_black_point: Optional[float] = None  # Auto-detect if None
-        self.tone_white_point: Optional[float] = None  # Auto-detect if None
-        self.tone_gamma: float = 1.0  # Gamma correction (1.0 = no correction)
-        self.tone_pixel_threshold: float = 0.001  # Threshold for tone detection (0.1% by default)
-
-        # Detected level points (for visualization)
-        self.detected_levels: Optional[Dict[str, Dict[str, float]]] = None  # {'R': {'black': x, 'white': y}, ...}
-        self.detected_tone_levels: Optional[Dict[str, float]] = None  # {'black': x, 'white': y} for luminance
-
-        # Visualization
-        self.vis_image: Optional[np.ndarray] = None
-        self.vis_path: Optional[str] = None
-        self.vis_callbacks: List[callable] = []  # Visualization callbacks registered by stages
-
         self.preset = Preset()
+
+        # Visualization callbacks (transient, not saved)
+        self.vis_callbacks: List[callable] = []
+        self.vis_image: Optional[np.ndarray] = None
 
     def register_vis(self, callback: callable):
         """Register a visualization callback.
@@ -559,10 +589,12 @@ class Metadata:
         return f"Metadata({', '.join(items)})"
 
     def save(self, preset_path: str):
+        """Save preset data to file."""
         with open(preset_path, "wb") as f:
             pickle.dump(self.preset, f)
 
     def load(self, preset_path: str):
+        """Load preset data from file and update state."""
         with open(preset_path, "rb") as f:
             self.preset = pickle.load(f)
 
@@ -571,7 +603,7 @@ class Metadata:
             field_value = getattr(self.preset, field_name)
 
             print(f"Loading {field_name}...")
-            setattr(self, field_name, field_value)
+            setattr(self.state, field_name, field_value)
 
 
 class Stage(ABC):
@@ -640,19 +672,18 @@ class BorderExtractStage(Stage):
 
         h, w = metadata.state.current_image.shape[:2]
 
-        # Get border ratios
-        border_specs = metadata.config.border_specs or {"u": 0.05, "d": 0.05, "l": 0.05, "r": 0.05}
-        metadata.config.border_specs = border_specs
+        # Get border ratios from config
+        border_specs = metadata.config.border_specs
 
         # Use common function to create mask
         metadata.state.border_mask = create_region_mask(h, w, "border", border_specs)
 
         # Use common function to extract pixels
-        metadata.config.border_pixels = extract_region_pixels(
-            metadata.config.current_image, region="border", border_specs=border_specs
+        metadata.state.border_pixels = extract_region_pixels(
+            metadata.state.current_image, region="border", border_specs=border_specs
         )
 
-        print(f"       Border pixels: {len(metadata.config.border_pixels)}")
+        print(f"       Border pixels: {len(metadata.state.border_pixels)}")
 
         # Register visualization callback with current image snapshot
         img_snapshot = metadata.state.current_image.copy()
@@ -701,11 +732,11 @@ class ColorClassifyStage(Stage):
     def preprocess(self, metadata: Metadata) -> Metadata:
         print(f"  [{self.name}] Classifying border pixels...")
 
-        pixels = metadata.border_pixels
+        pixels = metadata.state.border_pixels
 
         if len(pixels) == 0:
-            metadata.clusters = [np.empty((0, 3), dtype=pixels.dtype)] * metadata.n_clusters
-            metadata.cluster_labels = np.array([], dtype=int)
+            metadata.state.clusters = [np.empty((0, 3), dtype=pixels.dtype)] * metadata.config.n_clusters
+            metadata.state.cluster_labels = np.array([], dtype=int)
             return metadata
 
         # Calculate brightness
@@ -718,23 +749,23 @@ class ColorClassifyStage(Stage):
         gray_norm = (gray - gray.min()) / (gray.max() - gray.min() + 1e-6)
 
         # Divide into clusters by brightness
-        brightness_bins = np.linspace(0, 1, metadata.n_clusters + 1)
+        brightness_bins = np.linspace(0, 1, metadata.config.n_clusters + 1)
         labels = np.zeros(len(pixels), dtype=int)
         clusters = []
 
-        for i in range(metadata.n_clusters):
+        for i in range(metadata.config.n_clusters):
             mask = (gray_norm >= brightness_bins[i]) & (gray_norm < brightness_bins[i + 1])
             labels[mask] = i
             cluster_pixels = pixels[mask]
             clusters.append(cluster_pixels)
 
-        metadata.cluster_labels = labels
-        metadata.clusters = clusters
+        metadata.state.cluster_labels = labels
+        metadata.state.clusters = clusters
 
-        print(f"       Clusters: {metadata.n_clusters}, using {metadata.wb_classes} for WB")
+        print(f"       Clusters: {metadata.config.n_clusters}, using {metadata.config.wb_classes} for WB")
 
         # Register visualization callback with current image snapshot
-        img_snapshot = metadata.current_image.copy()
+        img_snapshot = metadata.state.current_image.copy()
         metadata.register_vis(lambda md: self._vis_with_image(img_snapshot, md))
 
         return metadata
@@ -745,7 +776,7 @@ class ColorClassifyStage(Stage):
 
     def _vis_with_image(self, img: np.ndarray, metadata: Metadata) -> Optional[np.ndarray]:
         """Create visualization with specific image as background."""
-        if metadata.cluster_labels is None:
+        if metadata.state.cluster_labels is None:
             return None
 
         h, w = img.shape[:2]
@@ -754,7 +785,7 @@ class ColorClassifyStage(Stage):
         # Create label_map following extraction order
         label_map = np.full((h, w), -1, dtype=int)
 
-        border_specs = metadata.border_specs
+        border_specs = metadata.config.border_specs
         u_ratio = border_specs.get("u", 0.05)
         d_ratio = border_specs.get("d", 0.05)
         l_ratio = border_specs.get("l", 0.05)
@@ -770,13 +801,13 @@ class ColorClassifyStage(Stage):
         if border_h_top > 0:
             for y in range(border_h_top):
                 for x in range(w):
-                    label_map[y, x] = metadata.cluster_labels[label_idx]
+                    label_map[y, x] = metadata.state.cluster_labels[label_idx]
                     label_idx += 1
 
         if border_h_bottom > 0:
             for y in range(h - border_h_bottom, h):
                 for x in range(w):
-                    label_map[y, x] = metadata.cluster_labels[label_idx]
+                    label_map[y, x] = metadata.state.cluster_labels[label_idx]
                     label_idx += 1
 
         if border_w_left > 0:
@@ -784,7 +815,7 @@ class ColorClassifyStage(Stage):
             v_end = h - border_h_bottom if border_h_bottom > 0 else h
             for y in range(v_start, v_end):
                 for x in range(border_w_left):
-                    label_map[y, x] = metadata.cluster_labels[label_idx]
+                    label_map[y, x] = metadata.state.cluster_labels[label_idx]
                     label_idx += 1
 
         if border_w_right > 0:
@@ -792,13 +823,13 @@ class ColorClassifyStage(Stage):
             v_end = h - border_h_bottom if border_h_bottom > 0 else h
             for y in range(v_start, v_end):
                 for x in range(w - border_w_right, w):
-                    label_map[y, x] = metadata.cluster_labels[label_idx]
+                    label_map[y, x] = metadata.state.cluster_labels[label_idx]
                     label_idx += 1
 
         # Create color overlay
         color_overlay = np.zeros_like(img_8bit)
 
-        for i in range(min(metadata.n_clusters, len(CLUSTER_COLORS))):
+        for i in range(min(metadata.config.n_clusters, len(CLUSTER_COLORS))):
             cluster_mask = label_map == i
             color_overlay[cluster_mask] = CLUSTER_COLORS[i]
 
@@ -806,8 +837,8 @@ class ColorClassifyStage(Stage):
         result = cv2.addWeighted(img_8bit, 0.5, color_overlay, 0.5, 0)
 
         # Highlight selected clusters
-        for class_idx in metadata.wb_classes:
-            if class_idx < metadata.n_clusters:
+        for class_idx in metadata.config.wb_classes:
+            if class_idx < metadata.config.n_clusters:
                 cluster_mask = label_map == class_idx
                 for c in range(3):
                     result[cluster_mask, c] = np.minimum(255, result[cluster_mask, c] + 80)
@@ -815,7 +846,7 @@ class ColorClassifyStage(Stage):
         # Add label
         cv2.putText(
             result,
-            f"Color Clusters (WB: {metadata.wb_classes})",
+            f"Color Clusters (WB: {metadata.config.wb_classes})",
             (10, 40),
             cv2.FONT_HERSHEY_SIMPLEX,
             1,
@@ -825,11 +856,11 @@ class ColorClassifyStage(Stage):
         )
 
         # Add legend
-        for i in range(min(metadata.n_clusters, len(CLUSTER_COLORS))):
+        for i in range(min(metadata.config.n_clusters, len(CLUSTER_COLORS))):
             y_pos = 80 + i * 40
             color = CLUSTER_COLORS[i]
             label_text = f"Cluster {i}"
-            if i in metadata.wb_classes:
+            if i in metadata.config.wb_classes:
                 label_text += " (WB)"
 
             cv2.rectangle(result, (10, y_pos - 20), (40, y_pos + 10), color, -1)
@@ -846,12 +877,12 @@ class WhiteBalanceComputeStage(Stage):
 
         # Collect pixels from selected classes
         target_pixels_list = []
-        for class_idx in metadata.wb_classes:
-            if class_idx < len(metadata.clusters) and len(metadata.clusters[class_idx]) > 0:
-                target_pixels_list.append(metadata.clusters[class_idx])
+        for class_idx in metadata.config.wb_classes:
+            if class_idx < len(metadata.state.clusters) and len(metadata.state.clusters[class_idx]) > 0:
+                target_pixels_list.append(metadata.state.clusters[class_idx])
 
         if not target_pixels_list or len(np.vstack(target_pixels_list)) < 100:
-            target_pixels = metadata.border_pixels
+            target_pixels = metadata.state.border_pixels
         else:
             target_pixels = np.vstack(target_pixels_list)
 
@@ -862,7 +893,7 @@ class WhiteBalanceComputeStage(Stage):
         wb_gains = means[1] / means
         wb_gains = wb_gains / wb_gains[1]  # Normalize G to 1.0
 
-        metadata.wb_gains = wb_gains
+        metadata.state.wb_gains = wb_gains
 
         print(f"       WB gains R={wb_gains[0]:.3f} G={wb_gains[1]:.3f} B={wb_gains[2]:.3f}")
         return metadata
@@ -882,14 +913,14 @@ class WhiteBalanceApplyStage(Stage):
         """
         Track wb_gains
         """
-        metadata.preset.wb_gains = metadata.wb_gains
+        metadata.preset.wb_gains = metadata.state.wb_gains
 
     def _apply_impl(self, metadata: Metadata) -> Metadata:
         print(f"  [{self.name}] Applying white balance...")
 
-        float_img = metadata.current_image.astype(np.float32)
-        balanced = float_img * metadata.wb_gains[np.newaxis, np.newaxis, :]
-        metadata.current_image = np.clip(balanced, 0, 65535).astype(metadata.current_image.dtype)
+        float_img = metadata.state.current_image.astype(np.float32)
+        balanced = float_img * metadata.state.wb_gains[np.newaxis, np.newaxis, :]
+        metadata.state.current_image = np.clip(balanced, 0, 65535).astype(metadata.state.current_image.dtype)
 
         return metadata
 
@@ -902,8 +933,8 @@ class InvertStage(Stage):
 
     def _apply_impl(self, metadata: Metadata) -> Metadata:
         print(f"  [{self.name}] Inverting image...")
-        max_val = np.iinfo(metadata.current_image.dtype).max
-        metadata.current_image = max_val - metadata.current_image
+        max_val = np.iinfo(metadata.state.current_image.dtype).max
+        metadata.state.current_image = max_val - metadata.state.current_image
         return metadata
 
 
@@ -913,7 +944,7 @@ class LevelRegionSelectStage(Stage):
 
     def preprocess(self, metadata: Metadata) -> Metadata:
         # Register visualization callback with current image snapshot
-        img_snapshot = metadata.current_image.copy()
+        img_snapshot = metadata.state.current_image.copy()
         metadata.register_vis(lambda md: self._vis_with_image(img_snapshot, md))
         return metadata
 
@@ -953,7 +984,7 @@ class LevelRegionSelectStage(Stage):
         # Add labels
         cv2.putText(
             vis,
-            f"Black: {metadata.black_level_region}",
+            f"Black: {metadata.config.black_level_region}",
             (10, 40),
             cv2.FONT_HERSHEY_SIMPLEX,
             1,
@@ -963,7 +994,7 @@ class LevelRegionSelectStage(Stage):
         )
         cv2.putText(
             vis,
-            f"White: {metadata.white_level_region}",
+            f"White: {metadata.config.white_level_region}",
             (10, 80),
             cv2.FONT_HERSHEY_SIMPLEX,
             1,
@@ -1013,19 +1044,19 @@ class LevelRegionSelectStage(Stage):
             channel_names=["R", "G", "B"],
             colors=[(0, 0, 255), (0, 255, 0), (255, 0, 0)],  # BGR format
             max_val=max_val,
-            detected_levels=metadata.detected_levels,
+            detected_levels=metadata.state.detected_levels,
         )
 
     def _get_region_mask(self, metadata: Metadata, level_type: str, h: int, w: int) -> np.ndarray:
         """Get mask for level detection region."""
-        region = metadata.black_level_region if level_type == "black" else metadata.white_level_region
+        region = metadata.config.black_level_region if level_type == "black" else metadata.config.white_level_region
 
         # Use existing border mask for efficiency
-        if region == "border" and metadata.border_mask is not None:
-            return metadata.border_mask
+        if region == "border" and metadata.state.border_mask is not None:
+            return metadata.state.border_mask
 
         # Use common function to create mask
-        return create_region_mask(h, w, region, metadata.border_specs, metadata.center_rect_ratio)
+        return create_region_mask(h, w, region, metadata.config.border_specs, metadata.config.center_rect_ratio)
 
 
 class LevelAdjustStage(Stage):
@@ -1033,11 +1064,11 @@ class LevelAdjustStage(Stage):
 
     def preprocess(self, metadata: Metadata) -> Metadata:
         print(f"  [{self.name}] Adjusting levels...")
-        print(f"       Black level region: {metadata.black_level_region}")
-        print(f"       White level region: {metadata.white_level_region}")
+        print(f"       Black level region: {metadata.config.black_level_region}")
+        print(f"       White level region: {metadata.config.white_level_region}")
 
         # Get thresholds for each channel
-        thresholds = metadata.level_pixel_threshold
+        thresholds = metadata.config.level_pixel_threshold
 
         # Check if all thresholds are the same
         if len(set(thresholds)) == 1:
@@ -1047,8 +1078,7 @@ class LevelAdjustStage(Stage):
                 f"       Pixel thresholds: R={thresholds[0]*100:.3f}% G={thresholds[1]*100:.3f}% B={thresholds[2]*100:.3f}%"
             )
 
-        result = np.empty_like(metadata.current_image, dtype=np.float32)
-        max_val = np.iinfo(metadata.current_image.dtype).max
+        max_val = np.iinfo(metadata.state.current_image.dtype).max
 
         # Extract pixels for black level detection
         black_pixels = self._extract_region_pixels(metadata, "black")
@@ -1059,12 +1089,12 @@ class LevelAdjustStage(Stage):
         print(f"       White region pixels: {white_pixels.shape[0] if white_pixels is not None else 'N/A'}")
 
         # Store detected levels for visualization
-        metadata.detected_levels = {}
+        metadata.state.detected_levels = {}
 
         black_points = []
         white_points = []
         for c, name in enumerate(["R", "G", "B"]):
-            channel = metadata.current_image[:, :, c].astype(np.float32)
+            channel = metadata.state.current_image[:, :, c].astype(np.float32)
 
             # Get threshold for this channel
             threshold = thresholds[c]
@@ -1086,18 +1116,22 @@ class LevelAdjustStage(Stage):
                 white_point = np.percentile(channel, 99.99)
 
             # Overwrite level point if specified.
-            if metadata.level_black_point[c] is not None:
-                print(f"       Overwrite {name} channel black point {black_point} with {metadata.level_black_point[c]}")
-                black_point = metadata.level_black_point[c]
+            if metadata.config.level_black_point[c] is not None:
+                print(
+                    f"       Overwrite {name} channel black point {black_point} with {metadata.config.level_black_point[c]}"
+                )
+                black_point = metadata.config.level_black_point[c]
 
-            if metadata.level_white_point[c] is not None:
-                print(f"       Overwrite {name} channel white point {white_point} with {metadata.level_white_point[c]}")
-                white_point = metadata.level_white_point[c]
+            if metadata.config.level_white_point[c] is not None:
+                print(
+                    f"       Overwrite {name} channel white point {white_point} with {metadata.config.level_white_point[c]}"
+                )
+                white_point = metadata.config.level_white_point[c]
 
             print(f"       {name}: black={black_point:.0f} white={white_point:.0f} range={white_point-black_point:.0f}")
 
             # Save detected levels
-            metadata.detected_levels[name] = {"black": black_point, "white": white_point}
+            metadata.state.detected_levels[name] = {"black": black_point, "white": white_point}
 
             black_points.append(black_point)
             white_points.append(white_point)
@@ -1107,43 +1141,43 @@ class LevelAdjustStage(Stage):
             # stretched = (channel - black_point) / (white_point - black_point) * max_val
             # result[:, :, c] = np.clip(stretched, 0, max_val)
 
-        metadata.black_points = black_points
-        metadata.white_points = white_points
+        metadata.state.black_points = black_points
+        metadata.state.white_points = white_points
         return metadata
 
     def track(self, metadata: Metadata):
-        metadata.preset.black_points = metadata.black_points
-        metadata.preset.white_points = metadata.white_points
+        metadata.preset.black_points = metadata.state.black_points
+        metadata.preset.white_points = metadata.state.white_points
 
     def _apply_impl(self, metadata: Metadata) -> Metadata:
-        black_points = metadata.black_points
-        white_points = metadata.white_points
+        black_points = metadata.state.black_points
+        white_points = metadata.state.white_points
         assert len(black_points) == 3, "Should be RGB."
 
-        max_val = np.iinfo(metadata.current_image.dtype).max
-        result = np.empty_like(metadata.current_image, dtype=np.float32)
+        max_val = np.iinfo(metadata.state.current_image.dtype).max
+        result = np.empty_like(metadata.state.current_image, dtype=np.float32)
         for c, (black_point, white_point) in enumerate(zip(black_points, white_points)):
-            channel = metadata.current_image[:, :, c].astype(np.float32)
+            channel = metadata.state.current_image[:, :, c].astype(np.float32)
             stretched = (channel - black_point) / (white_point - black_point) * max_val
             result[:, :, c] = np.clip(stretched, 0, max_val)
 
-        metadata.current_image = result.astype(metadata.current_image.dtype)
+        metadata.state.current_image = result.astype(metadata.state.current_image.dtype)
         return metadata
 
     def _extract_region_pixels(self, metadata: Metadata, level_type: str) -> np.ndarray:
         """Extract pixels from specified region for level detection."""
-        region = metadata.black_level_region if level_type == "black" else metadata.white_level_region
+        region = metadata.config.black_level_region if level_type == "black" else metadata.config.white_level_region
 
         # Use common function to extract pixels
-        if region == "border" and metadata.border_mask is not None:
+        if region == "border" and metadata.state.border_mask is not None:
             # Use existing border mask for efficiency
-            return metadata.current_image[metadata.border_mask]
+            return metadata.state.current_image[metadata.state.border_mask]
 
         return extract_region_pixels(
-            metadata.current_image,
+            metadata.state.current_image,
             region=region,
-            border_specs=metadata.border_specs if region == "border" else None,
-            center_ratio=metadata.center_rect_ratio,
+            border_specs=metadata.config.border_specs if region == "border" else None,
+            center_ratio=metadata.config.center_rect_ratio,
         )
 
     def _compute_level_point(self, pixels: np.ndarray, level_type: str, threshold: float, max_val: float) -> float:
@@ -1165,18 +1199,18 @@ class ToneAdjustStage(Stage):
 
     def preprocess(self, metadata: Metadata) -> Metadata:
         print(f"  [{self.name}] Adjusting tone (luminance)...")
-        print(f"       Tone detection region: {metadata.tone_region}")
-        print(f"       Pixel threshold: {metadata.tone_pixel_threshold*100:.3f}%")
+        print(f"       Tone detection region: {metadata.config.tone_region}")
+        print(f"       Pixel threshold: {metadata.config.tone_pixel_threshold*100:.3f}%")
 
-        img = metadata.current_image.astype(np.float32)
+        img = metadata.state.current_image.astype(np.float32)
         max_val = 65535  # 16-bit
 
         # Extract pixels from specified region for detection
         region_pixels = extract_region_pixels(
             img,
-            region=metadata.tone_region,
-            border_specs=metadata.border_specs if metadata.tone_region == "border" else None,
-            center_ratio=metadata.center_rect_ratio,
+            region=metadata.config.tone_region,
+            border_specs=metadata.config.border_specs if metadata.config.tone_region == "border" else None,
+            center_ratio=metadata.config.center_rect_ratio,
         )
 
         print(f"       Region pixels: {region_pixels.shape[0]}")
@@ -1185,42 +1219,41 @@ class ToneAdjustStage(Stage):
         lum_region = 0.299 * region_pixels[:, 0] + 0.587 * region_pixels[:, 1] + 0.114 * region_pixels[:, 2]
 
         # Detect black and white points using histogram method
-        black_point = self._compute_level_point(lum_region, "black", metadata.tone_pixel_threshold, max_val)
-        white_point = self._compute_level_point(lum_region, "white", metadata.tone_pixel_threshold, max_val)
+        black_point = self._compute_level_point(lum_region, "black", metadata.config.tone_pixel_threshold, max_val)
+        white_point = self._compute_level_point(lum_region, "white", metadata.config.tone_pixel_threshold, max_val)
 
-        if metadata.tone_black_point is not None:
-            print(f"       Overwrite black point {black_point} with {metadata.tone_black_point}")
-            black_point = metadata.tone_black_point
+        if metadata.config.tone_black_point is not None:
+            print(f"       Overwrite black point {black_point} with {metadata.config.tone_black_point}")
+            black_point = metadata.config.tone_black_point
 
-        if metadata.tone_white_point is not None:
-            print(f"       Overwrite white point {white_point} with {metadata.tone_white_point}")
-            white_point = metadata.tone_white_point
+        if metadata.config.tone_white_point is not None:
+            print(f"       Overwrite white point {white_point} with {metadata.config.tone_white_point}")
+            white_point = metadata.config.tone_white_point
 
-        print(f"       Luminance: black={black_point:.0f} white={white_point:.0f} gamma={metadata.tone_gamma:.2f}")
+        print(f"       Luminance: black={black_point:.0f} white={white_point:.0f} gamma={metadata.config.tone_gamma}")
 
         # Store detected levels for visualization
-        metadata.detected_tone_levels = {"black": black_point, "white": white_point}
+        metadata.state.detected_tone_levels = {"black": black_point, "white": white_point}
 
-        metadata.tone_black_point = black_point
-        metadata.tone_white_point = white_point
+        metadata.state.tone_black_point = black_point
+        metadata.state.tone_white_point = white_point
 
         # Register visualization callback
-        img_snapshot = metadata.current_image.copy()
+        img_snapshot = metadata.state.current_image.copy()
         metadata.register_vis(lambda md: self._vis_with_image(img_snapshot, md))
 
         return metadata
 
     def track(self, metadata: Metadata):
-        metadata.preset.tone_black_point = metadata.tone_black_point
-        metadata.preset.tone_white_point = metadata.tone_white_point
-        metadata.preset.tone_gamma = metadata.tone_gamma
+        metadata.preset.tone_black_point = metadata.state.tone_black_point
+        metadata.preset.tone_white_point = metadata.state.tone_white_point
+        metadata.preset.tone_gamma = metadata.config.tone_gamma
 
     def _apply_impl(self, metadata: Metadata) -> Metadata:
-        black_point = metadata.tone_black_point
-        white_point = metadata.tone_white_point
-        tone_gamma = metadata.tone_gamma
-        img = metadata.current_image.astype(np.float32)
-        # TODO: hard code max_val or use info
+        black_point = metadata.state.tone_black_point
+        white_point = metadata.state.tone_white_point
+        tone_gamma = metadata.config.tone_gamma
+        img = metadata.state.current_image.astype(np.float32)
         max_val = 65535  # 16-bit
 
         # Apply tone adjustment to ENTIRE image by clipping and remapping to full range
@@ -1235,7 +1268,7 @@ class ToneAdjustStage(Stage):
             channel_norm = (channel_clipped - black_point) / (white_point - black_point)
 
             # Apply gamma correction
-            if tone_gamma is not None and tone_gamma != 1.0:
+            if tone_gamma is not None:
                 channel_norm = np.power(channel_norm, 1.0 / tone_gamma)
 
             # Remap to full range [0, max_val]
@@ -1243,12 +1276,12 @@ class ToneAdjustStage(Stage):
 
             img[:, :, c] = result_channel
 
-        metadata.current_image = np.clip(img, 0, max_val).astype(metadata.current_image.dtype)
+        metadata.state.current_image = np.clip(img, 0, max_val).astype(metadata.state.current_image.dtype)
         return metadata
 
     def _vis_with_image(self, img: np.ndarray, metadata: Metadata) -> Optional[np.ndarray]:
         """Create tone adjustment visualization."""
-        if img is None or metadata.detected_tone_levels is None:
+        if img is None or metadata.state.detected_tone_levels is None:
             return None
 
         img_8bit = (img / 256).astype(np.uint8)
@@ -1276,7 +1309,14 @@ class ToneAdjustStage(Stage):
 
         # Add region label
         cv2.putText(
-            vis, f"Region: {metadata.tone_region}", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA
+            vis,
+            f"Region: {metadata.config.tone_region}",
+            (10, 80),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
         )
 
         # Add pixel count info
@@ -1287,9 +1327,9 @@ class ToneAdjustStage(Stage):
             )
 
         # Add parameters
-        black = metadata.detected_tone_levels["black"]
-        white = metadata.detected_tone_levels["white"]
-        gamma = metadata.tone_gamma
+        black = metadata.state.detected_tone_levels["black"]
+        white = metadata.state.detected_tone_levels["white"]
+        gamma = metadata.config.tone_gamma
         cv2.putText(
             vis,
             f"Black: {black:.0f} White: {white:.0f} Gamma: {gamma:.2f}",
@@ -1311,14 +1351,14 @@ class ToneAdjustStage(Stage):
 
     def _get_region_mask(self, metadata: Metadata, h: int, w: int) -> np.ndarray:
         """Get mask for tone detection region."""
-        region = metadata.tone_region
+        region = metadata.config.tone_region
 
         # Use existing border mask for efficiency
-        if region == "border" and metadata.border_mask is not None:
-            return metadata.border_mask
+        if region == "border" and metadata.state.border_mask is not None:
+            return metadata.state.border_mask
 
         # Use common function to create mask
-        return create_region_mask(h, w, region, metadata.border_specs, metadata.center_rect_ratio)
+        return create_region_mask(h, w, region, metadata.config.border_specs, metadata.config.center_rect_ratio)
 
     def _create_luminance_histogram_panel(
         self, img: np.ndarray, metadata: Metadata, panel_height: int, panel_width: int
@@ -1337,9 +1377,12 @@ class ToneAdjustStage(Stage):
         # detected_tone_levels = {'black': x, 'white': y}
         # Need: {'L': {'black': x, 'white': y}}
         detected_levels = None
-        if metadata.detected_tone_levels is not None:
+        if metadata.state.detected_tone_levels is not None:
             detected_levels = {
-                "L": {"black": metadata.detected_tone_levels["black"], "white": metadata.detected_tone_levels["white"]}
+                "L": {
+                    "black": metadata.state.detected_tone_levels["black"],
+                    "white": metadata.state.detected_tone_levels["white"],
+                }
             }
 
         # Use common histogram drawing function
@@ -1375,13 +1418,13 @@ class SaveStage(Stage):
         return metadata
 
     def _apply_impl(self, metadata: Metadata) -> Metadata:
-        if metadata.output_path is None:
+        if metadata.config.output_path is None:
             return metadata
 
         print(f"  [{self.name}] Saving result...")
-        img_8bit = (metadata.current_image / 256).astype(np.uint8)
-        cv2.imwrite(metadata.output_path, cv2.cvtColor(img_8bit, cv2.COLOR_RGB2BGR))
-        print(f"       Saved: {metadata.output_path}")
+        img_8bit = (metadata.state.current_image / 256).astype(np.uint8)
+        cv2.imwrite(metadata.config.output_path, cv2.cvtColor(img_8bit, cv2.COLOR_RGB2BGR))
+        print(f"       Saved: {metadata.config.output_path}")
         return metadata
 
 
@@ -1389,7 +1432,7 @@ class VisualizeStage(Stage):
     """Generate combined visualization from registered callbacks."""
 
     def preprocess(self, metadata: Metadata) -> Metadata:
-        if metadata.vis_path is None:
+        if metadata.config.vis_path is None:
             return metadata
 
         print(f"  [{self.name}] Creating visualization...")
@@ -1408,8 +1451,8 @@ class VisualizeStage(Stage):
         if len(vis_images) == 1:
             # Single visualization, save directly
             combined_bgr = cv2.cvtColor(vis_images[0], cv2.COLOR_RGB2BGR)
-            cv2.imwrite(metadata.vis_path, combined_bgr)
-            print(f"       Visualization saved: {metadata.vis_path}")
+            cv2.imwrite(metadata.config.vis_path, combined_bgr)
+            print(f"       Visualization saved: {metadata.config.vis_path}")
             metadata.vis_image = vis_images[0]
             return metadata
 
@@ -1425,8 +1468,8 @@ class VisualizeStage(Stage):
 
         # Save
         combined_bgr = cv2.cvtColor(combined, cv2.COLOR_RGB2BGR)
-        cv2.imwrite(metadata.vis_path, combined_bgr)
-        print(f"       Visualization saved: {metadata.vis_path}")
+        cv2.imwrite(metadata.config.vis_path, combined_bgr)
+        print(f"       Visualization saved: {metadata.config.vis_path}")
 
         metadata.vis_image = combined
         return metadata
@@ -1680,7 +1723,7 @@ Examples:
     parser.add_argument(
         "--tone-gamma",
         type=float,
-        default=None,
+        default=1.0,
         help="Tone adjustment gamma correction (default: 1.0, <1.0 darker, >1.0 lighter)",
     )
     parser.add_argument(
@@ -1709,17 +1752,36 @@ Examples:
     args.level_black_point = parse_level_point(args.level_black_point)
 
     n_clusters, wb_classes = parse_wb_ix(args.wb_ix)
-    args.n_clusters = n_clusters
-    args.wb_classes = wb_classes
-
-    # Create metadata
-    metadata = Metadata(args)
 
     # Setup visualization path
+    vis_path = None
     if args.visualize:
         # Generate vis path from output path
-        vis_output = metadata.config.output_path.rsplit(".", 1)[0] + "_vis.jpg"
-        metadata.config.vis_path = vis_output
+        vis_path = args.output_path.rsplit(".", 1)[0] + "_vis.jpg"
+
+    # Create Config object from args
+    config = Config(
+        raw_path=args.raw_path,
+        output_path=args.output_path,
+        border_specs=args.border_specs,
+        n_clusters=n_clusters,
+        wb_classes=wb_classes,
+        level_pixel_threshold=args.level_pixel_threshold,
+        level_black_point=args.level_black_point,
+        level_white_point=args.level_white_point,
+        black_level_region=args.black_level_region,
+        white_level_region=args.white_level_region,
+        center_rect_ratio=args.center_ratio,
+        tone_region=args.tone_region,
+        tone_black_point=args.tone_black,
+        tone_white_point=args.tone_white,
+        tone_gamma=args.tone_gamma,
+        tone_pixel_threshold=args.tone_pixel_threshold,
+        vis_path=vis_path,
+    )
+
+    # Create metadata with config
+    metadata = Metadata(config)
 
     # Build pipeline
     stages = [
