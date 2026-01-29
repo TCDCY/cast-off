@@ -466,28 +466,45 @@ class Preset:
     tone_gamma: Optional[float] = None
 
 
+@dataclass
+class State:
+    raw_image: Optional[np.ndarray] = None  # Original RAW (uint16)
+    current_image: Optional[np.ndarray] = None  # Current working image
+    border_mask: Optional[np.ndarray] = None
+    border_pixels: Optional[np.ndarray] = None
+    cluster_labels: Optional[np.ndarray] = None
+    clusters: Optional[List[np.ndarray]] = None
+
+
 class Metadata:
     """Container for all intermediate data and results."""
 
-    def __init__(self):
+    # TODO:
+    # 1. args
+    # 2. state
+    def __init__(self, args):
+        """
+        1. config
+        2. state
+        3. preset
+
+        TODO: NOTE
+
+
+        """
+        self.config = args
+        self.state = State()
+
         # Input/Output
         self.raw_path: Optional[str] = None
         self.output_path: Optional[str] = None
 
-        # Images
-        self.raw_image: Optional[np.ndarray] = None  # Original RAW (uint16)
-        self.current_image: Optional[np.ndarray] = None  # Current working image
-
         # Border info
         self.border_specs: Optional[Dict[str, float]] = None  # {'u': 0.05, 'd': 0.05, ...}
-        self.border_mask: Optional[np.ndarray] = None
-        self.border_pixels: Optional[np.ndarray] = None
 
         # Classification
         self.n_clusters: int = 3
         self.wb_classes: List[int] = [0]
-        self.cluster_labels: Optional[np.ndarray] = None
-        self.clusters: Optional[List[np.ndarray]] = None
 
         # White balance
         self.wb_gains: Optional[np.ndarray] = None
@@ -599,19 +616,19 @@ class RawLoadStage(Stage):
         return metadata
 
     def _apply_impl(self, metadata: Metadata) -> Metadata:
-        print(f"  [{self.name}] Loading RAW file: {metadata.raw_path}")
+        print(f"  [{self.name}] Loading RAW file: {metadata.config.raw_path}")
 
-        with rawpy.imread(metadata.raw_path) as raw:
-            metadata.raw_image = raw.postprocess(
+        with rawpy.imread(metadata.config.raw_path) as raw:
+            metadata.state.raw_image = raw.postprocess(
                 use_camera_wb=False,
                 output_bps=16,
                 gamma=(1, 1),
                 no_auto_bright=True,
                 output_color=rawpy.ColorSpace.sRGB,
             )
-            metadata.current_image = metadata.raw_image.copy()
+            metadata.state.current_image = metadata.state.raw_image.copy()
 
-        print(f"       Image size: {metadata.raw_image.shape}")
+        print(f"       Image size: {metadata.state.raw_image.shape}")
         return metadata
 
 
@@ -621,24 +638,24 @@ class BorderExtractStage(Stage):
     def preprocess(self, metadata: Metadata) -> Metadata:
         print(f"  [{self.name}] Extracting border region...")
 
-        h, w = metadata.current_image.shape[:2]
+        h, w = metadata.state.current_image.shape[:2]
 
         # Get border ratios
-        border_specs = metadata.border_specs or {"u": 0.05, "d": 0.05, "l": 0.05, "r": 0.05}
-        metadata.border_specs = border_specs
+        border_specs = metadata.config.border_specs or {"u": 0.05, "d": 0.05, "l": 0.05, "r": 0.05}
+        metadata.config.border_specs = border_specs
 
         # Use common function to create mask
-        metadata.border_mask = create_region_mask(h, w, "border", border_specs)
+        metadata.state.border_mask = create_region_mask(h, w, "border", border_specs)
 
         # Use common function to extract pixels
-        metadata.border_pixels = extract_region_pixels(
-            metadata.current_image, region="border", border_specs=border_specs
+        metadata.config.border_pixels = extract_region_pixels(
+            metadata.config.current_image, region="border", border_specs=border_specs
         )
 
-        print(f"       Border pixels: {len(metadata.border_pixels)}")
+        print(f"       Border pixels: {len(metadata.config.border_pixels)}")
 
         # Register visualization callback with current image snapshot
-        img_snapshot = metadata.current_image.copy()
+        img_snapshot = metadata.state.current_image.copy()
         metadata.register_vis(lambda md: self._vis_with_image(img_snapshot, md))
 
         return metadata
@@ -652,7 +669,7 @@ class BorderExtractStage(Stage):
         img_8bit = (img / 256).astype(np.uint8)
 
         overlay = np.zeros_like(img_8bit)
-        overlay[metadata.border_mask] = [0, 255, 0]
+        overlay[metadata.state.border_mask] = [0, 255, 0]
         result = cv2.addWeighted(img_8bit, 0.7, overlay, 0.3, 0)
 
         # Add label
@@ -1684,42 +1701,25 @@ Examples:
 
     args = parser.parse_args()
 
-    # Create metadata
-    metadata = Metadata()
-    metadata.raw_path = args.input
-    metadata.output_path = parse_output_specs(args.input, args.output)
-    metadata.border_specs = parse_border_specs(args.border)
-
-    # Parse level pixel threshold (single value or RGB format)
-    metadata.level_pixel_threshold = parse_level_threshold(args.level_pixel_threshold)
-
-    metadata.level_white_point = parse_level_point(args.level_white_point)
-    metadata.level_black_point = parse_level_point(args.level_black_point)
-
-    metadata.black_level_region = args.black_level_region
-    metadata.white_level_region = args.white_level_region
-    metadata.center_rect_ratio = args.center_ratio
-    metadata.tone_black_point = args.tone_black
-    metadata.tone_white_point = args.tone_white
-    metadata.tone_gamma = args.tone_gamma
-    metadata.tone_region = args.tone_region
-    # Use default threshold if not specified and no manual points set
-    if args.tone_pixel_threshold is not None:
-        metadata.tone_pixel_threshold = args.tone_pixel_threshold
-    elif args.tone_black is None and args.tone_white is None:
-        metadata.tone_pixel_threshold = 0.001  # Default threshold
-    else:
-        metadata.tone_pixel_threshold = None  # Manual mode
+    args.raw_path = args.input
+    args.output_path = parse_output_specs(args.input, args.output)
+    args.border_specs = parse_border_specs(args.border)
+    args.level_pixel_threshold = parse_level_threshold(args.level_pixel_threshold)
+    args.level_white_point = parse_level_point(args.level_white_point)
+    args.level_black_point = parse_level_point(args.level_black_point)
 
     n_clusters, wb_classes = parse_wb_ix(args.wb_ix)
-    metadata.n_clusters = n_clusters
-    metadata.wb_classes = wb_classes
+    args.n_clusters = n_clusters
+    args.wb_classes = wb_classes
+
+    # Create metadata
+    metadata = Metadata(args)
 
     # Setup visualization path
     if args.visualize:
         # Generate vis path from output path
-        vis_output = metadata.output_path.rsplit(".", 1)[0] + "_vis.jpg"
-        metadata.vis_path = vis_output
+        vis_output = metadata.config.output_path.rsplit(".", 1)[0] + "_vis.jpg"
+        metadata.config.vis_path = vis_output
 
     # Build pipeline
     stages = [
