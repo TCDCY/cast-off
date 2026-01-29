@@ -631,11 +631,9 @@ class Stage(ABC):
         """Track apply to preset"""
         pass
 
-    # TODO: refactor
-    # @abstractmethod
-    def vis(self, metadata: Metadata) -> Optional[np.ndarray]:
+    def vis(self, metadata: Metadata):
         """Generate visualization for this stage. Optional."""
-        return None
+        pass
 
 
 class RawLoadStage(Stage):
@@ -687,7 +685,7 @@ class BorderExtractStage(Stage):
 
         # Register visualization callback with current image snapshot
         img_snapshot = metadata.state.current_image.copy()
-        metadata.register_vis(lambda md: self._vis_with_image(img_snapshot, md))
+        metadata.register_vis(lambda md: self.vis(img_snapshot, md))
 
         return metadata
 
@@ -695,27 +693,12 @@ class BorderExtractStage(Stage):
         """Apply nothing"""
         return metadata
 
-    def _vis_with_image(self, img: np.ndarray, metadata: Metadata) -> Optional[np.ndarray]:
+    def vis(self, img: np.ndarray, metadata: Metadata) -> Optional[np.ndarray]:
         """Create visualization with specific image as background."""
         img_8bit = (img / 256).astype(np.uint8)
 
         overlay = np.zeros_like(img_8bit)
         overlay[metadata.state.border_mask] = [0, 255, 0]
-        result = cv2.addWeighted(img_8bit, 0.7, overlay, 0.3, 0)
-
-        # Add label
-        cv2.putText(
-            result, "Border Selection (Green)", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA
-        )
-
-        return result
-
-    def vis(self, metadata: Metadata) -> Optional[np.ndarray]:
-        """Visualize border selection."""
-        img_8bit = (metadata.current_image / 256).astype(np.uint8)
-
-        overlay = np.zeros_like(img_8bit)
-        overlay[metadata.border_mask] = [0, 255, 0]
         result = cv2.addWeighted(img_8bit, 0.7, overlay, 0.3, 0)
 
         # Add label
@@ -766,7 +749,7 @@ class ColorClassifyStage(Stage):
 
         # Register visualization callback with current image snapshot
         img_snapshot = metadata.state.current_image.copy()
-        metadata.register_vis(lambda md: self._vis_with_image(img_snapshot, md))
+        metadata.register_vis(lambda md: self.vis(img_snapshot, md))
 
         return metadata
 
@@ -774,7 +757,7 @@ class ColorClassifyStage(Stage):
         """Apply nothing."""
         return metadata
 
-    def _vis_with_image(self, img: np.ndarray, metadata: Metadata) -> Optional[np.ndarray]:
+    def vis(self, img: np.ndarray, metadata: Metadata) -> Optional[np.ndarray]:
         """Create visualization with specific image as background."""
         if metadata.state.cluster_labels is None:
             return None
@@ -938,20 +921,19 @@ class InvertStage(Stage):
         return metadata
 
 
-# TODO: review ?? useless standalone stage? since vis only
 class LevelRegionSelectStage(Stage):
     """Visualize level detection regions."""
 
     def preprocess(self, metadata: Metadata) -> Metadata:
         # Register visualization callback with current image snapshot
         img_snapshot = metadata.state.current_image.copy()
-        metadata.register_vis(lambda md: self._vis_with_image(img_snapshot, md))
+        metadata.register_vis(lambda md: self.vis(img_snapshot, md))
         return metadata
 
     def _apply_impl(self, metadata: Metadata) -> Metadata:
         return metadata
 
-    def _vis_with_image(self, img: np.ndarray, metadata: Metadata) -> Optional[np.ndarray]:
+    def vis(self, img: np.ndarray, metadata: Metadata) -> Optional[np.ndarray]:
         """Create visualization with specific image as background and RGB histograms."""
         if img is None:
             return None
@@ -1229,7 +1211,7 @@ class ToneAdjustStage(Stage):
 
         # Register visualization callback
         img_snapshot = metadata.state.current_image.copy()
-        metadata.register_vis(lambda md: self._vis_with_image(img_snapshot, md))
+        metadata.register_vis(lambda md: self.vis(img_snapshot, md))
 
         return metadata
 
@@ -1268,7 +1250,7 @@ class ToneAdjustStage(Stage):
         metadata.state.current_image = np.clip(img, 0, max_val).astype(metadata.state.current_image.dtype)
         return metadata
 
-    def _vis_with_image(self, img: np.ndarray, metadata: Metadata) -> Optional[np.ndarray]:
+    def vis(self, img: np.ndarray, metadata: Metadata) -> Optional[np.ndarray]:
         """Create tone adjustment visualization."""
         if img is None or metadata.state.detected_tone_levels is None:
             return None
@@ -1782,8 +1764,6 @@ Examples:
         ToneAdjustStage("ToneAdjust"),
     ]
 
-    # TODO: args can overwrite preset
-    # but how to handle default None things?
     should_load_preset = False
     should_visualize = args.visualize
     if args.load_preset is not None:
