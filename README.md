@@ -28,6 +28,18 @@ stages = [
 python film_mask_removal.py ./ZFC_5837.NEF --border l0.1,r0.1 --level-pixel-threshold r0.001,g0.001,b0.03  --wb-ix 4,1 --debug --visualize  --tone-pixel-threshold 0.03  --tone-white 64000 --level-white-point "b61000"
 ```
 
+### Save preset
+
+```bash
+python film_mask_removal.py ./ZFC_5837.NEF --border l0.1,r0.1 --level-pixel-threshold r0.001,g0.001,b0.03  --wb-ix 4,1 --debug --visualize  --tone-pixel-threshold 0.03  --tone-white 64000 --level-white-point "b61000" --save-preset ./preset.pkl
+```
+
+### Load preset
+
+```bash
+python film_mask_removal.py ./ZFC_5837.NEF --load-preset ./preset.pkl -o "new_{name}.png"
+```
+
 
 ## Processing Pipeline
 
