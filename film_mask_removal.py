@@ -489,6 +489,8 @@ class Metadata:
 
         # Parameters
         self.level_pixel_threshold: List[float] = [0.0001, 0.0001, 0.0001]  # Per-channel thresholds [R, G, B]
+        self.level_white_point: List[Optional[int]] = [None, None, None]  # Per-channel level point [R, G, B]
+        self.level_black_point: List[Optional[int]] = [None, None, None]  # Per-channel level point [R, G, B]
 
         # Level detection regions
         self.black_level_region: str = 'border'  # 'border' or 'center' or custom
@@ -1039,6 +1041,15 @@ class LevelAdjustStage(Stage):
                 black_point = np.percentile(channel, 0.01)
                 white_point = np.percentile(channel, 99.99)
 
+            # Overwrite level point if specified.
+            if metadata.level_black_point[c] is not None:
+                print(f"       Overwrite {name} channel black point {black_point} with {metadata.level_black_point[c]}")
+                black_point = metadata.level_black_point[c]
+
+            if metadata.level_white_point[c] is not None:
+                print(f"       Overwrite {name} channel white point {white_point} with {metadata.level_white_point[c]}")
+                white_point = metadata.level_white_point[c]
+
             print(f"       {name}: black={black_point:.0f} white={white_point:.0f} range={white_point-black_point:.0f}")
 
             # Save detected levels
@@ -1134,12 +1145,12 @@ class ToneAdjustStage(Stage):
         white_point = self._compute_level_point(lum_region, 'white', metadata.tone_pixel_threshold, max_val)
 
         if metadata.tone_black_point is not None:
+            print(f"       Overwrite black point {black_point} with {metadata.tone_black_point}")
             black_point = metadata.tone_black_point
-            print(f"       Overwrite black point with {black_point}")
 
         if metadata.tone_white_point is not None:
+            print(f"       Overwrite white point {white_point} with {metadata.tone_white_point}")
             white_point = metadata.tone_white_point
-            print(f"       Overwrite white point with {white_point}")
 
         print(f"       Luminance: black={black_point:.0f} white={white_point:.0f} gamma={metadata.tone_gamma:.2f}")
 
@@ -1468,6 +1479,39 @@ def parse_level_threshold(threshold_str: str, default: float = 0.0001) -> List[f
 
     return [thresholds['r'], thresholds['g'], thresholds['b']]
 
+def parse_level_point(level_point_str: Optional[str], default = None) -> List[Optional[int]]:
+    """Parse level threshold specification.
+
+    level point in [0, 65535]
+
+    Returns:
+        (tuple[int, int ,ine]): tuple of R, G, B level points.
+    """
+    if level_point_str is None:
+        return [None, None, None]
+
+    # Default values for each channel
+    level_point = {'r': default, 'g': default, 'b': default}
+    # Parse RGB format: r0.001,g0.002,b0.003
+    parts = [p.strip() for p in level_point_str.split(',')]
+    for part in parts:
+        if not part:
+            continue
+
+        # Parse each part like "r0.001" or "g0.002" or "b0.003"
+        if len(part) < 2 or part[0].lower() not in 'rgb':
+            raise ValueError(f"Invalid threshold format: {level_point_str}. "
+                            f"Expected format: 'r65534,g65534,b65534'")
+
+        channel = part[0].lower()
+        try:
+            value = int(part[1:])
+            level_point[channel] = value
+        except ValueError:
+            raise ValueError(f"Invalid threshold value: {part}")
+
+    return [level_point['r'], level_point['g'], level_point['b']]
+
 
 def parse_output_specs(input_path: str, output_spec: Optional[str]) -> str:
     """Generate output file path from output specification.
@@ -1539,6 +1583,10 @@ Examples:
                         help='Level detection threshold. Single value (e.g., 0.001) for all channels, '
                              'or RGB format (e.g., r0.001,g0.002,b0.003). Missing channels use default. '
                              'Values: 0.0001=0.01%%, 0.001=0.1%% (default: 0.0001)')
+    parser.add_argument('--level-white-point', type=str, default=None,
+                        help='RGB level white point format r<int>,g<int>,b<int>')
+    parser.add_argument('--level-black-point', type=str, default=None,
+                        help='RGB level black point format r<int>,g<int>,b<int>')
     parser.add_argument('--black-level-region', type=str, default='border',
                         help='Black level detection region: border, center, or x,y,w,h (default: border)')
     parser.add_argument('--white-level-region', type=str, default='center',
@@ -1571,6 +1619,9 @@ Examples:
 
     # Parse level pixel threshold (single value or RGB format)
     metadata.level_pixel_threshold = parse_level_threshold(args.level_pixel_threshold)
+
+    metadata.level_white_point = parse_level_point(args.level_white_point)
+    metadata.level_black_point = parse_level_point(args.level_black_point)
 
     metadata.black_level_region = args.black_level_region
     metadata.white_level_region = args.white_level_region
