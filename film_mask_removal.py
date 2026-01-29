@@ -6,34 +6,35 @@ Process: Base white balance -> Invert -> RGB level adjustment
 Refactored with Stage-based Pipeline architecture.
 """
 
-import numpy as np
-import rawpy
-import cv2
 import argparse
 import os
-import time
 import pickle
-from pathlib import Path
+import time
 from abc import ABC, abstractmethod
-from typing import Optional, List, Any, Dict
 from dataclasses import dataclass, fields
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import cv2
+import numpy as np
+import rawpy
 
 # Color map for visualization (BGR format for OpenCV)
 CLUSTER_COLORS = [
-    (0, 0, 255),      # Red
-    (0, 255, 0),      # Green
-    (255, 0, 0),      # Blue
-    (0, 255, 255),    # Yellow
-    (255, 0, 255),    # Magenta
-    (255, 255, 0),    # Cyan
-    (128, 0, 255),    # Purple
-    (255, 128, 0),    # Orange
+    (0, 0, 255),  # Red
+    (0, 255, 0),  # Green
+    (255, 0, 0),  # Blue
+    (0, 255, 255),  # Yellow
+    (255, 0, 255),  # Magenta
+    (255, 255, 0),  # Cyan
+    (128, 0, 255),  # Purple
+    (255, 128, 0),  # Orange
 ]
 
 
 def extract_region_pixels(
     image: np.ndarray,
-    region: str = 'border',
+    region: str = "border",
     border_specs: Optional[Dict[str, float]] = None,
     center_ratio: float = 0.5,
 ) -> np.ndarray:
@@ -50,15 +51,15 @@ def extract_region_pixels(
     """
     h, w = image.shape[:2]
 
-    if region == 'border':
+    if region == "border":
         # Extract borders
         if border_specs is None:
-            border_specs = {'u': 0.05, 'd': 0.05, 'l': 0.05, 'r': 0.05}
+            border_specs = {"u": 0.05, "d": 0.05, "l": 0.05, "r": 0.05}
 
-        u_ratio = border_specs.get('u', 0.05)
-        d_ratio = border_specs.get('d', 0.05)
-        l_ratio = border_specs.get('l', 0.05)
-        r_ratio = border_specs.get('r', 0.05)
+        u_ratio = border_specs.get("u", 0.05)
+        d_ratio = border_specs.get("d", 0.05)
+        l_ratio = border_specs.get("l", 0.05)
+        r_ratio = border_specs.get("r", 0.05)
 
         border_h_top = int(h * u_ratio)
         border_h_bottom = int(h * d_ratio)
@@ -94,7 +95,7 @@ def extract_region_pixels(
         else:
             return np.empty((0, 3), dtype=image.dtype)
 
-    elif region == 'center':
+    elif region == "center":
         # Extract center rectangle
         h_start = int(h * (1 - center_ratio) / 2)
         h_end = int(h * (1 + center_ratio) / 2)
@@ -107,7 +108,7 @@ def extract_region_pixels(
     else:
         # Custom region: parse as "x,y,w,h" format (ratios 0-1)
         try:
-            parts = [float(x) for x in region.split(',')]
+            parts = [float(x) for x in region.split(",")]
             if len(parts) == 4:
                 x, y, rw, rh = parts
                 h_start = int(h * y)
@@ -125,11 +126,7 @@ def extract_region_pixels(
 
 
 def find_level_point(
-    pixels: np.ndarray,
-    level_type: str,
-    threshold: float,
-    max_val: int = 65535,
-    method: str = 'cumulative'
+    pixels: np.ndarray, level_type: str, threshold: float, max_val: int = 65535, method: str = "cumulative"
 ) -> float:
     """Find black or white point from histogram using specified method.
 
@@ -146,11 +143,11 @@ def find_level_point(
     hist, bin_edges = np.histogram(pixels, bins=512, range=(0, max_val))
     total_pixels = pixels.size
 
-    if method == 'cumulative':
+    if method == "cumulative":
         # Cumulative method: accumulate from edge until threshold
         target_count = total_pixels * threshold
 
-        if level_type == 'black':
+        if level_type == "black":
             # From left, accumulate until reaching threshold
             cumulative = 0
             for i in range(len(hist)):
@@ -167,12 +164,12 @@ def find_level_point(
                     return bin_edges[i]
             return bin_edges[0]
 
-    elif method == 'peak':
+    elif method == "peak":
         # Peak method: find histogram peak and extend outward
         level_threshold = total_pixels * threshold
         max_bin = np.argmax(hist)
 
-        if level_type == 'black':
+        if level_type == "black":
             # From peak, go left until count drops below threshold
             for i in range(max_bin, -1, -1):
                 if hist[i] < level_threshold:
@@ -189,7 +186,7 @@ def find_level_point(
         # First peak method: find first significant peak from edge
         level_threshold = total_pixels * threshold
 
-        if level_type == 'black':
+        if level_type == "black":
             # From left, find first peak, then go to its left edge
             # Find first bin where count exceeds threshold
             start_bin = 0
@@ -244,7 +241,7 @@ def find_level_point(
 def create_region_mask(
     h: int,
     w: int,
-    region: str = 'border',
+    region: str = "border",
     border_specs: Optional[Dict[str, float]] = None,
     center_ratio: float = 0.5,
 ) -> np.ndarray:
@@ -262,14 +259,14 @@ def create_region_mask(
     """
     mask = np.zeros((h, w), dtype=bool)
 
-    if region == 'border':
+    if region == "border":
         if border_specs is None:
-            border_specs = {'u': 0.05, 'd': 0.05, 'l': 0.05, 'r': 0.05}
+            border_specs = {"u": 0.05, "d": 0.05, "l": 0.05, "r": 0.05}
 
-        u_ratio = border_specs.get('u', 0.05)
-        d_ratio = border_specs.get('d', 0.05)
-        l_ratio = border_specs.get('l', 0.05)
-        r_ratio = border_specs.get('r', 0.05)
+        u_ratio = border_specs.get("u", 0.05)
+        d_ratio = border_specs.get("d", 0.05)
+        l_ratio = border_specs.get("l", 0.05)
+        r_ratio = border_specs.get("r", 0.05)
 
         border_h_top = int(h * u_ratio)
         border_h_bottom = int(h * d_ratio)
@@ -291,7 +288,7 @@ def create_region_mask(
             if v_end > v_start:
                 mask[v_start:v_end, -border_w_right:] = True
 
-    elif region == 'center':
+    elif region == "center":
         h_start = int(h * (1 - center_ratio) / 2)
         h_end = int(h * (1 + center_ratio) / 2)
         w_start = int(w * (1 - center_ratio) / 2)
@@ -301,7 +298,7 @@ def create_region_mask(
     else:
         # Custom region: parse as "x,y,w,h" format
         try:
-            parts = [float(x) for x in region.split(',')]
+            parts = [float(x) for x in region.split(",")]
             if len(parts) == 4:
                 x, y, rw, rh = parts
                 h_start = int(h * y)
@@ -358,11 +355,10 @@ def create_histogram_panel(
 
     # Default colors
     if colors is None:
-        colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0)][:len(histograms)]
+        colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0)][: len(histograms)]
 
     # Draw title
-    cv2.putText(panel, title, (10, 18),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.putText(panel, title, (10, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
 
     # Draw y-axis grid lines and labels (actual pixel counts)
     for y_ratio in [1.0, 0.5, 0.0]:
@@ -372,21 +368,19 @@ def create_histogram_panel(
         # Draw label with actual pixel count
         pixel_count = int(max_count * y_ratio)
         if pixel_count >= 1000000:
-            label = f'{pixel_count/1000000:.1f}M'
+            label = f"{pixel_count/1000000:.1f}M"
         elif pixel_count >= 1000:
-            label = f'{pixel_count/1000:.1f}K'
+            label = f"{pixel_count/1000:.1f}K"
         else:
-            label = f'{pixel_count}'
-        cv2.putText(panel, label, (5, y + 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.3, (150, 150, 150), 1, cv2.LINE_AA)
+            label = f"{pixel_count}"
+        cv2.putText(panel, label, (5, y + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (150, 150, 150), 1, cv2.LINE_AA)
 
     # Draw channel labels on the left (if provided)
     if channel_names:
         for i, name in enumerate(channel_names):
             y_pos = margin_top + 20 + i * 15
             color = colors[i] if i < len(colors) else (200, 200, 200)
-            cv2.putText(panel, name, (10, y_pos),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+            cv2.putText(panel, name, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
 
     # Draw histograms
     line_thickness = 5
@@ -408,16 +402,16 @@ def create_histogram_panel(
                 continue
 
             levels = detected_levels[color_name]
-            if 'black' in levels and 'white' in levels:
-                black_point = levels['black']
-                white_point = levels['white']
+            if "black" in levels and "white" in levels:
+                black_point = levels["black"]
+                white_point = levels["white"]
 
                 # Draw black point marker
                 black_x = margin_left + int(black_point / max_val * hist_width)
                 triangle_pts = [
                     (black_x, margin_top + hist_height),
                     (black_x - 6, margin_top + hist_height - 10),
-                    (black_x + 6, margin_top + hist_height - 10)
+                    (black_x + 6, margin_top + hist_height - 10),
                 ]
                 pts = np.array(triangle_pts, dtype=np.int32)
                 cv2.polylines(panel, [pts], True, color, marker_thickness)
@@ -427,23 +421,35 @@ def create_histogram_panel(
                 triangle_pts = [
                     (white_x, margin_top + hist_height),
                     (white_x - 6, margin_top + hist_height - 10),
-                    (white_x + 6, margin_top + hist_height - 10)
+                    (white_x + 6, margin_top + hist_height - 10),
                 ]
                 pts = np.array(triangle_pts, dtype=np.int32)
                 cv2.polylines(panel, [pts], True, color, marker_thickness)
 
     # Draw x-axis
-    cv2.line(panel, (margin_left, margin_top + hist_height),
-             (margin_left + hist_width, margin_top + hist_height), (150, 150, 150), 1)
+    cv2.line(
+        panel,
+        (margin_left, margin_top + hist_height),
+        (margin_left + hist_width, margin_top + hist_height),
+        (150, 150, 150),
+        1,
+    )
 
     # Draw x-axis labels
     for val in [0, 16384, 32768, 49152, 65535]:
         x = margin_left + int(val / max_val * hist_width)
-        cv2.line(panel, (x, margin_top + hist_height),
-                 (x, margin_top + hist_height + 3), (150, 150, 150), 1)
-        label = str(val) if val > 0 else '0'
-        cv2.putText(panel, label, (x - 15, margin_top + hist_height + 15),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.3, (180, 180, 180), 1, cv2.LINE_AA)
+        cv2.line(panel, (x, margin_top + hist_height), (x, margin_top + hist_height + 3), (150, 150, 150), 1)
+        label = str(val) if val > 0 else "0"
+        cv2.putText(
+            panel,
+            label,
+            (x - 15, margin_top + hist_height + 15),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.3,
+            (180, 180, 180),
+            1,
+            cv2.LINE_AA,
+        )
 
     return panel
 
@@ -470,7 +476,7 @@ class Metadata:
         self.output_path: Optional[str] = None
 
         # Images
-        self.raw_image: Optional[np.ndarray] = None      # Original RAW (uint16)
+        self.raw_image: Optional[np.ndarray] = None  # Original RAW (uint16)
         self.current_image: Optional[np.ndarray] = None  # Current working image
 
         # Border info
@@ -493,12 +499,12 @@ class Metadata:
         self.level_black_point: List[Optional[int]] = [None, None, None]  # Per-channel level point [R, G, B]
 
         # Level detection regions
-        self.black_level_region: str = 'border'  # 'border' or 'center' or custom
-        self.white_level_region: str = 'center'  # 'border' or 'center' or custom
+        self.black_level_region: str = "border"  # 'border' or 'center' or custom
+        self.white_level_region: str = "center"  # 'border' or 'center' or custom
         self.center_rect_ratio: float = 0.5  # Center region ratio (for 'center' detection)
 
         # Tone adjustment parameters
-        self.tone_region: str = 'center'  # Region for tone detection ('border', 'center', 'manual')
+        self.tone_region: str = "center"  # Region for tone detection ('border', 'center', 'manual')
         self.tone_black_point: Optional[float] = None  # Auto-detect if None
         self.tone_white_point: Optional[float] = None  # Auto-detect if None
         self.tone_gamma: float = 1.0  # Gamma correction (1.0 = no correction)
@@ -525,10 +531,10 @@ class Metadata:
     def __repr__(self):
         items = []
         for key, value in self.__dict__.items():
-            if value is not None and not key.startswith('_'):
+            if value is not None and not key.startswith("_"):
                 if isinstance(value, np.ndarray):
                     items.append(f"{key}=array({value.shape})")
-                elif isinstance(value, list) and key == 'vis_callbacks':
+                elif isinstance(value, list) and key == "vis_callbacks":
                     items.append(f"{key}=[{len(value)} callbacks]")
                 elif isinstance(value, list):
                     items.append(f"{key}=list({len(value)})")
@@ -546,7 +552,7 @@ class Metadata:
 
         for field in fields(self.preset):
             field_name = field.name
-            field_value = getattr(self.preset, field_name) 
+            field_value = getattr(self.preset, field_name)
 
             print(f"Loading {field_name}...")
             setattr(self, field_name, field_value)
@@ -602,7 +608,7 @@ class RawLoadStage(Stage):
                 output_bps=16,
                 gamma=(1, 1),
                 no_auto_bright=True,
-                output_color=rawpy.ColorSpace.sRGB
+                output_color=rawpy.ColorSpace.sRGB,
             )
             metadata.current_image = metadata.raw_image.copy()
 
@@ -619,17 +625,15 @@ class BorderExtractStage(Stage):
         h, w = metadata.current_image.shape[:2]
 
         # Get border ratios
-        border_specs = metadata.border_specs or {'u': 0.05, 'd': 0.05, 'l': 0.05, 'r': 0.05}
+        border_specs = metadata.border_specs or {"u": 0.05, "d": 0.05, "l": 0.05, "r": 0.05}
         metadata.border_specs = border_specs
 
         # Use common function to create mask
-        metadata.border_mask = create_region_mask(h, w, 'border', border_specs)
+        metadata.border_mask = create_region_mask(h, w, "border", border_specs)
 
         # Use common function to extract pixels
         metadata.border_pixels = extract_region_pixels(
-            metadata.current_image,
-            region='border',
-            border_specs=border_specs
+            metadata.current_image, region="border", border_specs=border_specs
         )
 
         print(f"       Border pixels: {len(metadata.border_pixels)}")
@@ -653,8 +657,9 @@ class BorderExtractStage(Stage):
         result = cv2.addWeighted(img_8bit, 0.7, overlay, 0.3, 0)
 
         # Add label
-        cv2.putText(result, 'Border Selection (Green)', (10, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+        cv2.putText(
+            result, "Border Selection (Green)", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA
+        )
 
         return result
 
@@ -667,8 +672,9 @@ class BorderExtractStage(Stage):
         result = cv2.addWeighted(img_8bit, 0.7, overlay, 0.3, 0)
 
         # Add label
-        cv2.putText(result, 'Border Selection (Green)', (10, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+        cv2.putText(
+            result, "Border Selection (Green)", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA
+        )
 
         return result
 
@@ -717,7 +723,6 @@ class ColorClassifyStage(Stage):
 
         return metadata
 
-
     def _apply_impl(self, metadata: Metadata) -> Metadata:
         """Apply nothing."""
         return metadata
@@ -734,10 +739,10 @@ class ColorClassifyStage(Stage):
         label_map = np.full((h, w), -1, dtype=int)
 
         border_specs = metadata.border_specs
-        u_ratio = border_specs.get('u', 0.05)
-        d_ratio = border_specs.get('d', 0.05)
-        l_ratio = border_specs.get('l', 0.05)
-        r_ratio = border_specs.get('r', 0.05)
+        u_ratio = border_specs.get("u", 0.05)
+        d_ratio = border_specs.get("d", 0.05)
+        l_ratio = border_specs.get("l", 0.05)
+        r_ratio = border_specs.get("r", 0.05)
 
         border_h_top = int(h * u_ratio)
         border_h_bottom = int(h * d_ratio)
@@ -792,20 +797,27 @@ class ColorClassifyStage(Stage):
                     result[cluster_mask, c] = np.minimum(255, result[cluster_mask, c] + 80)
 
         # Add label
-        cv2.putText(result, f'Color Clusters (WB: {metadata.wb_classes})', (10, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(
+            result,
+            f"Color Clusters (WB: {metadata.wb_classes})",
+            (10, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
 
         # Add legend
         for i in range(min(metadata.n_clusters, len(CLUSTER_COLORS))):
             y_pos = 80 + i * 40
             color = CLUSTER_COLORS[i]
-            label_text = f'Cluster {i}'
+            label_text = f"Cluster {i}"
             if i in metadata.wb_classes:
-                label_text += ' (WB)'
+                label_text += " (WB)"
 
             cv2.rectangle(result, (10, y_pos - 20), (40, y_pos + 10), color, -1)
-            cv2.putText(result, label_text, (50, y_pos),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(result, label_text, (50, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1, cv2.LINE_AA)
 
         return result
 
@@ -907,8 +919,8 @@ class LevelRegionSelectStage(Stage):
         vis = img_8bit.copy()
 
         # Create masks for visualization
-        black_region = self._get_region_mask(metadata, 'black', h, w)
-        white_region = self._get_region_mask(metadata, 'white', h, w)
+        black_region = self._get_region_mask(metadata, "black", h, w)
+        white_region = self._get_region_mask(metadata, "white", h, w)
 
         # Overlay black region (red)
         if black_region is not None:
@@ -923,20 +935,38 @@ class LevelRegionSelectStage(Stage):
             vis = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
 
         # Add labels
-        cv2.putText(vis, f'Black: {metadata.black_level_region}', (10, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
-        cv2.putText(vis, f'White: {metadata.white_level_region}', (10, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA)
+        cv2.putText(
+            vis,
+            f"Black: {metadata.black_level_region}",
+            (10, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (0, 0, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            vis,
+            f"White: {metadata.white_level_region}",
+            (10, 80),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (255, 0, 0),
+            2,
+            cv2.LINE_AA,
+        )
 
         # Add pixel count info
         if black_region is not None:
             black_count = np.sum(black_region)
-            cv2.putText(vis, f'{black_count:,} px', (10, 120),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1, cv2.LINE_AA)
+            cv2.putText(
+                vis, f"{black_count:,} px", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1, cv2.LINE_AA
+            )
         if white_region is not None:
             white_count = np.sum(white_region)
-            cv2.putText(vis, f'{white_count:,} px', (10, 150),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1, cv2.LINE_AA)
+            cv2.putText(
+                vis, f"{white_count:,} px", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1, cv2.LINE_AA
+            )
 
         # Create histogram panel (at the bottom, 20% height)
         hist_panel = self._create_histogram_panel(img, metadata, hist_height, w)
@@ -946,7 +976,9 @@ class LevelRegionSelectStage(Stage):
 
         return combined
 
-    def _create_histogram_panel(self, img: np.ndarray, metadata: Metadata, panel_height: int, panel_width: int) -> np.ndarray:
+    def _create_histogram_panel(
+        self, img: np.ndarray, metadata: Metadata, panel_height: int, panel_width: int
+    ) -> np.ndarray:
         """Create RGB histogram visualization panel."""
         max_val = 65535  # 16-bit
 
@@ -961,8 +993,8 @@ class LevelRegionSelectStage(Stage):
             histograms=histograms,
             panel_height=panel_height,
             panel_width=panel_width,
-            title='RGB Histograms',
-            channel_names=['R', 'G', 'B'],
+            title="RGB Histograms",
+            channel_names=["R", "G", "B"],
             colors=[(0, 0, 255), (0, 255, 0), (255, 0, 0)],  # BGR format
             max_val=max_val,
             detected_levels=metadata.detected_levels,
@@ -970,10 +1002,10 @@ class LevelRegionSelectStage(Stage):
 
     def _get_region_mask(self, metadata: Metadata, level_type: str, h: int, w: int) -> np.ndarray:
         """Get mask for level detection region."""
-        region = metadata.black_level_region if level_type == 'black' else metadata.white_level_region
+        region = metadata.black_level_region if level_type == "black" else metadata.white_level_region
 
         # Use existing border mask for efficiency
-        if region == 'border' and metadata.border_mask is not None:
+        if region == "border" and metadata.border_mask is not None:
             return metadata.border_mask
 
         # Use common function to create mask
@@ -995,17 +1027,19 @@ class LevelAdjustStage(Stage):
         if len(set(thresholds)) == 1:
             print(f"       Pixel threshold: {thresholds[0]*100:.3f}%")
         else:
-            print(f"       Pixel thresholds: R={thresholds[0]*100:.3f}% G={thresholds[1]*100:.3f}% B={thresholds[2]*100:.3f}%")
+            print(
+                f"       Pixel thresholds: R={thresholds[0]*100:.3f}% G={thresholds[1]*100:.3f}% B={thresholds[2]*100:.3f}%"
+            )
 
         result = np.empty_like(metadata.current_image, dtype=np.float32)
         max_val = np.iinfo(metadata.current_image.dtype).max
 
         # Extract pixels for black level detection
-        black_pixels = self._extract_region_pixels(metadata, 'black')
+        black_pixels = self._extract_region_pixels(metadata, "black")
         print(f"       Black region pixels: {black_pixels.shape[0] if black_pixels is not None else 'N/A'}")
 
         # Extract pixels for white level detection
-        white_pixels = self._extract_region_pixels(metadata, 'white')
+        white_pixels = self._extract_region_pixels(metadata, "white")
         print(f"       White region pixels: {white_pixels.shape[0] if white_pixels is not None else 'N/A'}")
 
         # Store detected levels for visualization
@@ -1013,7 +1047,7 @@ class LevelAdjustStage(Stage):
 
         black_points = []
         white_points = []
-        for c, name in enumerate(['R', 'G', 'B']):
+        for c, name in enumerate(["R", "G", "B"]):
             channel = metadata.current_image[:, :, c].astype(np.float32)
 
             # Get threshold for this channel
@@ -1021,18 +1055,12 @@ class LevelAdjustStage(Stage):
 
             # Calculate black point from black region
             black_point = self._compute_level_point(
-                black_pixels[:, c] if black_pixels is not None else channel.flatten(),
-                'black',
-                threshold,
-                max_val
+                black_pixels[:, c] if black_pixels is not None else channel.flatten(), "black", threshold, max_val
             )
 
             # Calculate white point from white region
             white_point = self._compute_level_point(
-                white_pixels[:, c] if white_pixels is not None else channel.flatten(),
-                'white',
-                threshold,
-                max_val
+                white_pixels[:, c] if white_pixels is not None else channel.flatten(), "white", threshold, max_val
             )
 
             # TODO: review?? useless??
@@ -1053,7 +1081,7 @@ class LevelAdjustStage(Stage):
             print(f"       {name}: black={black_point:.0f} white={white_point:.0f} range={white_point-black_point:.0f}")
 
             # Save detected levels
-            metadata.detected_levels[name] = {'black': black_point, 'white': white_point}
+            metadata.detected_levels[name] = {"black": black_point, "white": white_point}
 
             black_points.append(black_point)
             white_points.append(white_point)
@@ -1088,18 +1116,18 @@ class LevelAdjustStage(Stage):
 
     def _extract_region_pixels(self, metadata: Metadata, level_type: str) -> np.ndarray:
         """Extract pixels from specified region for level detection."""
-        region = metadata.black_level_region if level_type == 'black' else metadata.white_level_region
+        region = metadata.black_level_region if level_type == "black" else metadata.white_level_region
 
         # Use common function to extract pixels
-        if region == 'border' and metadata.border_mask is not None:
+        if region == "border" and metadata.border_mask is not None:
             # Use existing border mask for efficiency
             return metadata.current_image[metadata.border_mask]
 
         return extract_region_pixels(
             metadata.current_image,
             region=region,
-            border_specs=metadata.border_specs if region == 'border' else None,
-            center_ratio=metadata.center_rect_ratio
+            border_specs=metadata.border_specs if region == "border" else None,
+            center_ratio=metadata.center_rect_ratio,
         )
 
     def _compute_level_point(self, pixels: np.ndarray, level_type: str, threshold: float, max_val: float) -> float:
@@ -1113,7 +1141,7 @@ class LevelAdjustStage(Stage):
             threshold: Pixel count threshold (as fraction of total pixels)
             max_val: Maximum pixel value (e.g., 65535 for 16-bit)
         """
-        return find_level_point(pixels, level_type, threshold, max_val, method='peak')
+        return find_level_point(pixels, level_type, threshold, max_val, method="peak")
 
 
 class ToneAdjustStage(Stage):
@@ -1131,8 +1159,8 @@ class ToneAdjustStage(Stage):
         region_pixels = extract_region_pixels(
             img,
             region=metadata.tone_region,
-            border_specs=metadata.border_specs if metadata.tone_region == 'border' else None,
-            center_ratio=metadata.center_rect_ratio
+            border_specs=metadata.border_specs if metadata.tone_region == "border" else None,
+            center_ratio=metadata.center_rect_ratio,
         )
 
         print(f"       Region pixels: {region_pixels.shape[0]}")
@@ -1141,8 +1169,8 @@ class ToneAdjustStage(Stage):
         lum_region = 0.299 * region_pixels[:, 0] + 0.587 * region_pixels[:, 1] + 0.114 * region_pixels[:, 2]
 
         # Detect black and white points using histogram method
-        black_point = self._compute_level_point(lum_region, 'black', metadata.tone_pixel_threshold, max_val)
-        white_point = self._compute_level_point(lum_region, 'white', metadata.tone_pixel_threshold, max_val)
+        black_point = self._compute_level_point(lum_region, "black", metadata.tone_pixel_threshold, max_val)
+        white_point = self._compute_level_point(lum_region, "white", metadata.tone_pixel_threshold, max_val)
 
         if metadata.tone_black_point is not None:
             print(f"       Overwrite black point {black_point} with {metadata.tone_black_point}")
@@ -1155,7 +1183,7 @@ class ToneAdjustStage(Stage):
         print(f"       Luminance: black={black_point:.0f} white={white_point:.0f} gamma={metadata.tone_gamma:.2f}")
 
         # Store detected levels for visualization
-        metadata.detected_tone_levels = {'black': black_point, 'white': white_point}
+        metadata.detected_tone_levels = {"black": black_point, "white": white_point}
 
         metadata.tone_black_point = black_point
         metadata.tone_white_point = white_point
@@ -1226,25 +1254,36 @@ class ToneAdjustStage(Stage):
             vis = cv2.addWeighted(vis, 0.7, overlay, 0.3, 0)
 
         # Add title
-        cv2.putText(vis, 'Tone Adjustment (Luminance)', (10, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(
+            vis, "Tone Adjustment (Luminance)", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA
+        )
 
         # Add region label
-        cv2.putText(vis, f'Region: {metadata.tone_region}', (10, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+        cv2.putText(
+            vis, f"Region: {metadata.tone_region}", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA
+        )
 
         # Add pixel count info
         if tone_region is not None:
             tone_count = np.sum(tone_region)
-            cv2.putText(vis, f'{tone_count:,} px', (10, 120),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1, cv2.LINE_AA)
+            cv2.putText(
+                vis, f"{tone_count:,} px", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1, cv2.LINE_AA
+            )
 
         # Add parameters
-        black = metadata.detected_tone_levels['black']
-        white = metadata.detected_tone_levels['white']
+        black = metadata.detected_tone_levels["black"]
+        white = metadata.detected_tone_levels["white"]
         gamma = metadata.tone_gamma
-        cv2.putText(vis, f'Black: {black:.0f} White: {white:.0f} Gamma: {gamma:.2f}', (10, 150),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1, cv2.LINE_AA)
+        cv2.putText(
+            vis,
+            f"Black: {black:.0f} White: {white:.0f} Gamma: {gamma:.2f}",
+            (10, 150),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (200, 200, 200),
+            1,
+            cv2.LINE_AA,
+        )
 
         # Create luminance histogram panel
         hist_panel = self._create_luminance_histogram_panel(img, metadata, hist_height, w)
@@ -1259,14 +1298,15 @@ class ToneAdjustStage(Stage):
         region = metadata.tone_region
 
         # Use existing border mask for efficiency
-        if region == 'border' and metadata.border_mask is not None:
+        if region == "border" and metadata.border_mask is not None:
             return metadata.border_mask
 
         # Use common function to create mask
         return create_region_mask(h, w, region, metadata.border_specs, metadata.center_rect_ratio)
 
-    def _create_luminance_histogram_panel(self, img: np.ndarray, metadata: Metadata,
-                                          panel_height: int, panel_width: int) -> np.ndarray:
+    def _create_luminance_histogram_panel(
+        self, img: np.ndarray, metadata: Metadata, panel_height: int, panel_width: int
+    ) -> np.ndarray:
         """Create luminance histogram visualization panel."""
         max_val = 65535
 
@@ -1283,10 +1323,7 @@ class ToneAdjustStage(Stage):
         detected_levels = None
         if metadata.detected_tone_levels is not None:
             detected_levels = {
-                'L': {
-                    'black': metadata.detected_tone_levels['black'],
-                    'white': metadata.detected_tone_levels['white']
-                }
+                "L": {"black": metadata.detected_tone_levels["black"], "white": metadata.detected_tone_levels["white"]}
             }
 
         # Use common histogram drawing function
@@ -1294,8 +1331,8 @@ class ToneAdjustStage(Stage):
             histograms=[hist],
             panel_height=panel_height,
             panel_width=panel_width,
-            title='Luminance Histogram',
-            channel_names=['L'],
+            title="Luminance Histogram",
+            channel_names=["L"],
             colors=[(128, 128, 128)],  # Gray for luminance
             max_val=max_val,
             detected_levels=detected_levels,
@@ -1312,7 +1349,7 @@ class ToneAdjustStage(Stage):
             threshold: Pixel count threshold (as fraction of total pixels)
             max_val: Maximum pixel value (e.g., 65535 for 16-bit)
         """
-        return find_level_point(pixels, level_type, threshold, int(max_val), method='cumulative')
+        return find_level_point(pixels, level_type, threshold, int(max_val), method="cumulative")
 
 
 class SaveStage(Stage):
@@ -1405,28 +1442,28 @@ def parse_border_specs(border_str: str) -> Dict[str, float]:
 
     # TODO: refact: split?
 
-    if ',' in border_str or any(c in border_str for c in 'udlr'):
-        for part in border_str.replace(' ', ',').split(','):
+    if "," in border_str or any(c in border_str for c in "udlr"):
+        for part in border_str.replace(" ", ",").split(","):
             if part:
                 direction = part[0].lower()
-                if direction in 'udlr':
+                if direction in "udlr":
                     value = float(part[1:])
                     border_specs[direction] = value
 
         # Fill missing directions with 0
-        for direction in 'udlr':
+        for direction in "udlr":
             if direction not in border_specs:
                 border_specs[direction] = 0.0
     else:
         ratio = float(border_str)
-        border_specs = {'u': ratio, 'd': ratio, 'l': ratio, 'r': ratio}
+        border_specs = {"u": ratio, "d": ratio, "l": ratio, "r": ratio}
 
     return border_specs
 
 
 def parse_wb_ix(wb_ix_str: str) -> tuple:
     """Parse white balance index specification."""
-    parts = [int(x.strip()) for x in wb_ix_str.split(',')]
+    parts = [int(x.strip()) for x in wb_ix_str.split(",")]
     n_clusters = parts[0]
     wb_classes = parts[1:] if len(parts) > 1 else [0]
     return n_clusters, wb_classes
@@ -1449,7 +1486,7 @@ def parse_level_threshold(threshold_str: str, default: float = 0.0001) -> List[f
         ValueError: If format is invalid
     """
     # Default values for each channel
-    thresholds = {'r': default, 'g': default, 'b': default}
+    thresholds = {"r": default, "g": default, "b": default}
 
     # Check if it's a single number (no letters)
     try:
@@ -1459,16 +1496,17 @@ def parse_level_threshold(threshold_str: str, default: float = 0.0001) -> List[f
         pass  # Not a single number, try RGB format
 
     # Parse RGB format: r0.001,g0.002,b0.003
-    parts = [p.strip() for p in threshold_str.split(',')]
+    parts = [p.strip() for p in threshold_str.split(",")]
 
     for part in parts:
         if not part:
             continue
 
         # Parse each part like "r0.001" or "g0.002" or "b0.003"
-        if len(part) < 2 or part[0].lower() not in 'rgb':
-            raise ValueError(f"Invalid threshold format: {threshold_str}. "
-                            f"Expected format: '0.001' or 'r0.001,g0.002,b0.003'")
+        if len(part) < 2 or part[0].lower() not in "rgb":
+            raise ValueError(
+                f"Invalid threshold format: {threshold_str}. " f"Expected format: '0.001' or 'r0.001,g0.002,b0.003'"
+            )
 
         channel = part[0].lower()
         try:
@@ -1477,9 +1515,10 @@ def parse_level_threshold(threshold_str: str, default: float = 0.0001) -> List[f
         except ValueError:
             raise ValueError(f"Invalid threshold value: {part}")
 
-    return [thresholds['r'], thresholds['g'], thresholds['b']]
+    return [thresholds["r"], thresholds["g"], thresholds["b"]]
 
-def parse_level_point(level_point_str: Optional[str], default = None) -> List[Optional[int]]:
+
+def parse_level_point(level_point_str: Optional[str], default=None) -> List[Optional[int]]:
     """Parse level threshold specification.
 
     level point in [0, 65535]
@@ -1491,17 +1530,18 @@ def parse_level_point(level_point_str: Optional[str], default = None) -> List[Op
         return [None, None, None]
 
     # Default values for each channel
-    level_point = {'r': default, 'g': default, 'b': default}
+    level_point = {"r": default, "g": default, "b": default}
     # Parse RGB format: r0.001,g0.002,b0.003
-    parts = [p.strip() for p in level_point_str.split(',')]
+    parts = [p.strip() for p in level_point_str.split(",")]
     for part in parts:
         if not part:
             continue
 
         # Parse each part like "r0.001" or "g0.002" or "b0.003"
-        if len(part) < 2 or part[0].lower() not in 'rgb':
-            raise ValueError(f"Invalid threshold format: {level_point_str}. "
-                            f"Expected format: 'r65534,g65534,b65534'")
+        if len(part) < 2 or part[0].lower() not in "rgb":
+            raise ValueError(
+                f"Invalid threshold format: {level_point_str}. " f"Expected format: 'r65534,g65534,b65534'"
+            )
 
         channel = part[0].lower()
         try:
@@ -1510,7 +1550,7 @@ def parse_level_point(level_point_str: Optional[str], default = None) -> List[Op
         except ValueError:
             raise ValueError(f"Invalid threshold value: {part}")
 
-    return [level_point['r'], level_point['g'], level_point['b']]
+    return [level_point["r"], level_point["g"], level_point["b"]]
 
 
 def parse_output_specs(input_path: str, output_spec: Optional[str]) -> str:
@@ -1528,10 +1568,10 @@ def parse_output_specs(input_path: str, output_spec: Optional[str]) -> str:
     """
     # Default format
     if output_spec is None:
-        output_spec = '{name}_{hash}.jpg'
+        output_spec = "{name}_{hash}.jpg"
 
     # Check if output_spec contains variables
-    if '{' not in output_spec:
+    if "{" not in output_spec:
         # No variables, use as-is
         return output_spec
 
@@ -1550,7 +1590,7 @@ def parse_output_specs(input_path: str, output_spec: Optional[str]) -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Nikon RAW Film Mask Removal Tool',
+        description="Nikon RAW Film Mask Removal Tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -1567,47 +1607,81 @@ Examples:
   # Custom processing pipeline
   python film_mask_removal.py input.NEF -o output.jpg \\
       --stages load,border,classify,wb_compute,wb_apply,invert,level,save
-        """
+        """,
     )
-    parser.add_argument('input', help='Input RAW file path')
-    parser.add_argument('-o', '--output',
-                        help='Output file path. Use {name} for filename, {hash} for timestamp hash. '
-                             'Default: {hash}_{name}.jpg')
-    parser.add_argument('--save-preset', help='Save preset to file.', default=None)
-    parser.add_argument('--load-preset', help='Load preset to file.', default=None)
-    parser.add_argument('-b', '--border', type=str, default='0.05',
-                        help='Border ratios (default: 0.05, or u0.05,d0.05,l0.05,r0.05)')
-    parser.add_argument('--wb-ix', type=str, default='3,0',
-                        help='White balance clusters: n_clusters,class_idx1,... (default: 3,0)')
-    parser.add_argument('--level-pixel-threshold', type=str, default='0.0001',
-                        help='Level detection threshold. Single value (e.g., 0.001) for all channels, '
-                             'or RGB format (e.g., r0.001,g0.002,b0.003). Missing channels use default. '
-                             'Values: 0.0001=0.01%%, 0.001=0.1%% (default: 0.0001)')
-    parser.add_argument('--level-white-point', type=str, default=None,
-                        help='RGB level white point format r<int>,g<int>,b<int>')
-    parser.add_argument('--level-black-point', type=str, default=None,
-                        help='RGB level black point format r<int>,g<int>,b<int>')
-    parser.add_argument('--black-level-region', type=str, default='border',
-                        help='Black level detection region: border, center, or x,y,w,h (default: border)')
-    parser.add_argument('--white-level-region', type=str, default='center',
-                        help='White level detection region: border, center, or x,y,w,h (default: center)')
-    parser.add_argument('--center-ratio', type=float, default=0.5,
-                        help='Center region ratio for level detection (0.0-1.0, default: 0.5)')
-    parser.add_argument('--tone-black', type=float, default=None,
-                        help='Tone adjustment black point (auto-detect if not specified)')
-    parser.add_argument('--tone-white', type=float, default=None,
-                        help='Tone adjustment white point (auto-detect if not specified)')
-    parser.add_argument('--tone-gamma', type=float, default=None,
-                        help='Tone adjustment gamma correction (default: 1.0, <1.0 darker, >1.0 lighter)')
-    parser.add_argument('--tone-region', type=str, default='center',
-                        choices=['border', 'center', 'manual'],
-                        help='Region for tone detection (default: center)')
-    parser.add_argument('--tone-pixel-threshold', type=float, default=0.05,
-                        help='Tone detection threshold (0.0001=0.01%%, 0.001=0.1%%, 0.01=1%%)')
-    parser.add_argument('--debug', action='store_true',
-                        help='Show debug information')
-    parser.add_argument('--visualize', action='store_true',
-                        help='Create classification visualization')
+    parser.add_argument("input", help="Input RAW file path")
+    parser.add_argument(
+        "-o",
+        "--output",
+        help="Output file path. Use {name} for filename, {hash} for timestamp hash. " "Default: {hash}_{name}.jpg",
+    )
+    parser.add_argument("--save-preset", help="Save preset to file.", default=None)
+    parser.add_argument("--load-preset", help="Load preset to file.", default=None)
+    parser.add_argument(
+        "-b", "--border", type=str, default="0.05", help="Border ratios (default: 0.05, or u0.05,d0.05,l0.05,r0.05)"
+    )
+    parser.add_argument(
+        "--wb-ix", type=str, default="3,0", help="White balance clusters: n_clusters,class_idx1,... (default: 3,0)"
+    )
+    parser.add_argument(
+        "--level-pixel-threshold",
+        type=str,
+        default="0.0001",
+        help="Level detection threshold. Single value (e.g., 0.001) for all channels, "
+        "or RGB format (e.g., r0.001,g0.002,b0.003). Missing channels use default. "
+        "Values: 0.0001=0.01%%, 0.001=0.1%% (default: 0.0001)",
+    )
+    parser.add_argument(
+        "--level-white-point", type=str, default=None, help="RGB level white point format r<int>,g<int>,b<int>"
+    )
+    parser.add_argument(
+        "--level-black-point", type=str, default=None, help="RGB level black point format r<int>,g<int>,b<int>"
+    )
+    parser.add_argument(
+        "--black-level-region",
+        type=str,
+        default="border",
+        help="Black level detection region: border, center, or x,y,w,h (default: border)",
+    )
+    parser.add_argument(
+        "--white-level-region",
+        type=str,
+        default="center",
+        help="White level detection region: border, center, or x,y,w,h (default: center)",
+    )
+    parser.add_argument(
+        "--center-ratio",
+        type=float,
+        default=0.5,
+        help="Center region ratio for level detection (0.0-1.0, default: 0.5)",
+    )
+    parser.add_argument(
+        "--tone-black", type=float, default=None, help="Tone adjustment black point (auto-detect if not specified)"
+    )
+    parser.add_argument(
+        "--tone-white", type=float, default=None, help="Tone adjustment white point (auto-detect if not specified)"
+    )
+    parser.add_argument(
+        "--tone-gamma",
+        type=float,
+        default=None,
+        help="Tone adjustment gamma correction (default: 1.0, <1.0 darker, >1.0 lighter)",
+    )
+    parser.add_argument(
+        "--tone-region",
+        type=str,
+        default="center",
+        choices=["border", "center", "manual"],
+        help="Region for tone detection (default: center)",
+    )
+    parser.add_argument(
+        "--tone-pixel-threshold",
+        type=float,
+        default=0.05,
+        help="Tone detection threshold (0.0001=0.01%%, 0.001=0.1%%, 0.01=1%%)",
+    )
+    parser.add_argument("--debug", action="store_true", help="Show debug information")
+    parser.add_argument("--visualize", action="store_true", help="Create classification visualization")
 
     args = parser.parse_args()
 
@@ -1645,7 +1719,7 @@ Examples:
     # Setup visualization path
     if args.visualize:
         # Generate vis path from output path
-        vis_output = metadata.output_path.rsplit('.', 1)[0] + '_vis.jpg'
+        vis_output = metadata.output_path.rsplit(".", 1)[0] + "_vis.jpg"
         metadata.vis_path = vis_output
 
     # Build pipeline
@@ -1687,5 +1761,5 @@ Examples:
         metadata.save(args.save_preset)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
