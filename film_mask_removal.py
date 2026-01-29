@@ -1393,8 +1393,29 @@ class SaveStage(Stage):
             return metadata
 
         print(f"  [{self.name}] Saving result...")
-        img_8bit = (metadata.state.current_image / 256).astype(np.uint8)
-        cv2.imwrite(metadata.config.output_path, cv2.cvtColor(img_8bit, cv2.COLOR_RGB2BGR))
+        current_img = metadata.state.current_image
+        img_bgr = cv2.cvtColor(current_img, cv2.COLOR_RGB2BGR)
+        output_path = metadata.config.output_path
+        if output_path.lower().endswith(".png"):
+            print(f"       Saving as png.")
+            cv2.imwrite(output_path, img_bgr, [cv2.IMWRITE_PNG_COMPRESSION, 9])
+        elif output_path.lower().endswith(".tif") or output_path.lower().endswith(".tiff"):
+            print(f"       Saving as tif.")
+            cv2.imwrite(output_path, img_bgr)
+        else:
+            print(f"       Saving as jpg.")
+            img_8bit = np.clip((current_img / 65535 * 255), 0, 255).astype(np.uint8)
+            img_8bit_bgr = cv2.cvtColor(img_8bit, cv2.COLOR_RGB2BGR)
+            save_params = [
+                cv2.IMWRITE_JPEG_QUALITY,
+                95,
+                cv2.IMWRITE_JPEG_CHROMA_QUALITY,
+                100,
+                cv2.IMWRITE_JPEG_SAMPLING_FACTOR,
+                cv2.IMWRITE_JPEG_SAMPLING_FACTOR_444,
+            ]
+            cv2.imwrite(output_path, img_8bit_bgr, save_params)
+
         print(f"       Saved: {metadata.config.output_path}")
         return metadata
 
