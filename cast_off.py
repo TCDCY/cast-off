@@ -1121,6 +1121,10 @@ class LevelAdjustStage(Stage):
             white_point = self._compute_level_point(
                 white_pixels[:, c] if white_pixels is not None else channel.flatten(), "white", threshold, max_val
             )
+            if white_point < black_point:
+                print(f"       Auto tone failed.")
+                black_point = 0
+                white_point = 65535
 
             # Overwrite level point if specified.
             if metadata.config.level_black_point[c] is not None:
@@ -1536,7 +1540,7 @@ def parse_border_specs(border_str: str, default: float = 0.0) -> Dict[str, float
     """Parse border specification string."""
     border_specs = {"u": default, "d": default, "l": default, "r": default}
 
-    if "," in border_str:
+    if "," in border_str or any(c in border_str for c in "udlr"):
         parts = [p.strip() for p in border_str.split(",")]
         for part in parts:
             if part:
