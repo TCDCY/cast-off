@@ -1,10 +1,3 @@
-"""
-Nikon RAW Film Mask Removal Script
-Process: Base white balance -> Invert -> RGB level adjustment
-
-Refactored with Stage-based Pipeline architecture.
-"""
-
 import argparse
 import os
 import pickle
