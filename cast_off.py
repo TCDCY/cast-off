@@ -475,7 +475,10 @@ class State:
 
     # Original and working images
     raw_image: Optional[np.ndarray] = None  # Original RAW (uint16)
-    current_image: Optional[np.ndarray] = None  # Current working image
+    # Current working image (for visualization, with clip)
+    current_image: Optional[np.ndarray] = None
+    # Working image (full precision, no intermediate clip)
+    working_image: Optional[np.ndarray] = None
 
     # Border extraction
     border_mask: Optional[np.ndarray] = None
@@ -485,7 +488,7 @@ class State:
     cluster_labels: Optional[np.ndarray] = None
     clusters: Optional[List[np.ndarray]] = None
 
-    # Computed values
+    # Computed values (for detection/visualization)
     wb_gains: Optional[np.ndarray] = None
     black_points: Optional[List[float]] = None
     white_points: Optional[List[float]] = None
@@ -528,6 +531,10 @@ class Config:
     tone_white_point: Optional[float] = None
     tone_gamma: float = 1.0
     tone_pixel_threshold: float = 0.001
+
+    # Denoise
+    kernel_size: int = 3
+    denoise_method: str = "none"
 
     # Visualization
     vis_path: Optional[str] = None
@@ -658,6 +665,7 @@ class RawLoadStage(Stage):
                 output_color=rawpy.ColorSpace.sRGB,
             )
             metadata.state.current_image = metadata.state.raw_image.copy()
+            metadata.state.working_image = metadata.state.raw_image.copy().astype(np.float64)
 
         print(f"       Image size: {metadata.state.raw_image.shape}")
         return metadata
@@ -904,37 +912,48 @@ class WhiteBalanceComputeStage(Stage):
 
 
 class WhiteBalanceApplyStage(Stage):
-    """Apply white balance to image."""
+    """Apply white balance to both visualization and working images."""
 
     def preprocess(self, metadata: Metadata) -> Metadata:
         return metadata
 
     def track(self, metadata: Metadata):
         """
-        Track wb_gains
+        Track wb_gains for preset
         """
         metadata.preset.wb_gains = metadata.state.wb_gains
 
     def _apply_impl(self, metadata: Metadata) -> Metadata:
         print(f"  [{self.name}] Applying white balance...")
 
+        # Update visualization image (with clip for display purposes)
         float_img = metadata.state.current_image.astype(np.float32)
         balanced = float_img * metadata.state.wb_gains[np.newaxis, np.newaxis, :]
         metadata.state.current_image = np.clip(balanced, 0, 65535).astype(metadata.state.current_image.dtype)
+
+        # Update working image (full precision, no clip)
+        metadata.state.working_image = metadata.state.working_image * metadata.state.wb_gains[np.newaxis, np.newaxis, :]
 
         return metadata
 
 
 class InvertStage(Stage):
-    """Invert image (negative to positive)."""
+    """Invert both visualization and working images."""
 
     def preprocess(self, metadata: Metadata) -> Metadata:
         return metadata
 
     def _apply_impl(self, metadata: Metadata) -> Metadata:
         print(f"  [{self.name}] Inverting image...")
-        max_val = np.iinfo(metadata.state.current_image.dtype).max
+
+        max_val = 65535.0
+
+        # Update visualization image (with clip for display purposes)
         metadata.state.current_image = max_val - metadata.state.current_image
+
+        # Update working image (full precision, no clip)
+        metadata.state.working_image = max_val - metadata.state.working_image
+
         return metadata
 
 
@@ -1091,7 +1110,7 @@ class LevelAdjustStage(Stage):
                 f"       Pixel thresholds: R={thresholds[0]*100:.3f}% G={thresholds[1]*100:.3f}% B={thresholds[2]*100:.3f}%"
             )
 
-        max_val = np.iinfo(metadata.state.current_image.dtype).max
+        max_val = 65535  # Fixed 16-bit value
 
         # Extract pixels for black level detection
         black_pixels = self._extract_region_pixels(metadata, "black")
@@ -1160,7 +1179,9 @@ class LevelAdjustStage(Stage):
         white_points = metadata.state.white_points
         assert len(black_points) == 3, "Should be RGB."
 
-        max_val = np.iinfo(metadata.state.current_image.dtype).max
+        max_val = 65535.0
+
+        # Update visualization image (with clip for display purposes)
         result = np.empty_like(metadata.state.current_image, dtype=np.float32)
         for c, (black_point, white_point) in enumerate(zip(black_points, white_points)):
             channel = metadata.state.current_image[:, :, c].astype(np.float32)
@@ -1168,6 +1189,12 @@ class LevelAdjustStage(Stage):
             result[:, :, c] = np.clip(stretched, 0, max_val)
 
         metadata.state.current_image = result.astype(metadata.state.current_image.dtype)
+
+        # Update working image (full precision, no intermediate clip)
+        for c, (black_point, white_point) in enumerate(zip(black_points, white_points)):
+            channel = metadata.state.working_image[:, :, c]
+            metadata.state.working_image[:, :, c] = (channel - black_point) / (white_point - black_point) * max_val
+
         return metadata
 
     def _extract_region_pixels(self, metadata: Metadata, level_type: str) -> np.ndarray:
@@ -1264,30 +1291,27 @@ class ToneAdjustStage(Stage):
         black_point = metadata.state.tone_black_point
         white_point = metadata.state.tone_white_point
         tone_gamma = metadata.config.tone_gamma
-        img = metadata.state.current_image.astype(np.float32)
-        max_val = 65535  # 16-bit
+        max_val = 65535.0
 
-        # Apply tone adjustment to ENTIRE image by clipping and remapping to full range
-        # For each channel: clip and stretch
+        # Update visualization image (with clip for display purposes)
+        img = metadata.state.current_image.astype(np.float32)
         for c in range(3):
             channel = img[:, :, c]
-
-            # Clip to detected range
             channel_clipped = np.clip(channel, black_point, white_point)
-
-            # Normalize to [0, 1]
             channel_norm = (channel_clipped - black_point) / (white_point - black_point)
-
-            # Apply gamma correction
             if tone_gamma is not None:
                 channel_norm = np.power(channel_norm, 1.0 / tone_gamma)
-
-            # Remap to full range [0, max_val]
-            result_channel = channel_norm * max_val
-
-            img[:, :, c] = result_channel
-
+            img[:, :, c] = channel_norm * max_val
         metadata.state.current_image = np.clip(img, 0, max_val).astype(metadata.state.current_image.dtype)
+
+        # Update working image (full precision, no intermediate clip)
+        for c in range(3):
+            channel = metadata.state.working_image[:, :, c]
+            channel_stretched = (channel - black_point) / (white_point - black_point)
+            if tone_gamma is not None:
+                channel_stretched = np.power(np.clip(channel_stretched, 0, None), 1.0 / tone_gamma)
+            metadata.state.working_image[:, :, c] = channel_stretched * max_val
+
         return metadata
 
     def vis(self, img: np.ndarray, metadata: Metadata) -> Optional[np.ndarray]:
@@ -1436,6 +1460,63 @@ class ToneAdjustStage(Stage):
         return find_level_point(pixels, level_type, threshold, int(max_val), method="cumulative")
 
 
+class DenoiseStage(Stage):
+    """Apply mild color smoothing to reduce isolated pixel artifacts.
+
+    Uses small kernel convolution to smooth isolated noise pixels without
+    affecting overall image detail or file size.
+    """
+
+    def preprocess(self, metadata: Metadata) -> Metadata:
+        return metadata
+
+    def _apply_impl(self, metadata: Metadata) -> Metadata:
+        method = metadata.config.denoise_method
+        kernel_size = metadata.config.kernel_size
+
+        if metadata.config.denoise_method == "none":
+            return metadata
+
+        print(f"  [{self.name}] Applying color smoothing (kernel={kernel_size}, method={method})...")
+
+        # Update visualization image
+        img = metadata.state.current_image
+        if method == "gaussian":
+            sigma = 0.8 if kernel_size == 3 else 1.2
+            print(f"       Using Gaussian blur (kernel={kernel_size}, sigma={sigma})")
+            denoised = cv2.GaussianBlur(img, (kernel_size, kernel_size), sigma)
+        elif method == "median":
+            print(f"       Using median filter (kernel={kernel_size})")
+            denoised = cv2.medianBlur(img, kernel_size)
+        elif method == "bilateral":
+            img_8bit = (img / 256).astype(np.uint8)
+            d = 5 if kernel_size == 3 else 7
+            sigma_color = 50
+            sigma_space = 50
+            print(f"       Using bilateral filter (d={d}, sigmaColor={sigma_color}, sigmaSpace={sigma_space})")
+            denoised_8bit = cv2.bilateralFilter(img_8bit, d, sigma_color, sigma_space)
+            denoised = (denoised_8bit.astype(np.float32) * 256).astype(np.uint16)
+        else:
+            raise ValueError(f"Unknown denoise method: {method}")
+        metadata.state.current_image = denoised
+
+        # Update working image (convert to uint16 for OpenCV, then back to float64)
+        work_img = np.clip(metadata.state.working_image, 0, 65535).astype(np.uint16)
+        if method == "gaussian":
+            sigma = 0.8 if kernel_size == 3 else 1.2
+            denoised_work = cv2.GaussianBlur(work_img, (kernel_size, kernel_size), sigma)
+        elif method == "median":
+            denoised_work = cv2.medianBlur(work_img, kernel_size)
+        elif method == "bilateral":
+            work_img_8bit = (work_img / 256).astype(np.uint8)
+            d = 5 if kernel_size == 3 else 7
+            denoised_work_8bit = cv2.bilateralFilter(work_img_8bit, d, sigma_color, sigma_space)
+            denoised_work = (denoised_work_8bit.astype(np.float32) * 256).astype(np.uint16)
+        metadata.state.working_image = denoised_work.astype(np.float64)
+
+        return metadata
+
+
 class SaveStage(Stage):
     """Save current image."""
 
@@ -1447,8 +1528,9 @@ class SaveStage(Stage):
             return metadata
 
         print(f"  [{self.name}] Saving result...")
-        current_img = metadata.state.current_image
-        img_bgr = cv2.cvtColor(current_img, cv2.COLOR_RGB2BGR)
+        # Use working_image for full precision output
+        working_img = np.clip(metadata.state.working_image, 0, 65535).astype(np.uint16)
+        img_bgr = cv2.cvtColor(working_img, cv2.COLOR_RGB2BGR)
         output_path = metadata.config.output_path
         if output_path.lower().endswith(".png"):
             print(f"       Saving as png.")
@@ -1458,7 +1540,7 @@ class SaveStage(Stage):
             cv2.imwrite(output_path, img_bgr)
         else:
             print(f"       Saving as jpg.")
-            img_8bit = np.clip((current_img / 65535 * 255), 0, 255).astype(np.uint8)
+            img_8bit = np.clip((working_img / 65535 * 255), 0, 255).astype(np.uint8)
             img_8bit_bgr = cv2.cvtColor(img_8bit, cv2.COLOR_RGB2BGR)
             save_params = [
                 cv2.IMWRITE_JPEG_QUALITY,
@@ -1561,6 +1643,20 @@ def parse_border_specs(border_str: str, default: float = 0.0) -> Dict[str, float
         border_specs = {"u": ratio, "d": ratio, "l": ratio, "r": ratio}
 
     return border_specs
+
+
+def parse_denoise_specs(denoise_cmd: str, default_kernel_size: int = 3):
+    parts = [p.strip() for p in denoise_cmd.split(",")]
+    method = parts[0].lower()
+    command = {
+        "denoise_method": "none",
+        "kernel_size": default_kernel_size,
+    }
+    if method != "none":
+        command["denoise_method"] = method
+        command["kernel_size"] = int(parts[1])
+
+    return command
 
 
 def parse_wb_ix(wb_ix_str: str) -> tuple:
@@ -1784,6 +1880,13 @@ Examples:
     )
     parser.add_argument("--debug", action="store_true", help="Show debug information")
     parser.add_argument("--visualize", action="store_true", help="Create classification visualization")
+    parser.add_argument(
+        "--denoise",
+        type=str,
+        default="none",
+        help="Color smoothing method: none (default), gaussian (fast), median, or bilateral (preserves edges)"
+        "Format <command>,<kernel_size>",
+    )
 
     args = parser.parse_args()
 
@@ -1821,6 +1924,7 @@ Examples:
         tone_gamma=args.tone_gamma,
         tone_pixel_threshold=args.tone_pixel_threshold,
         vis_path=vis_path,
+        **parse_denoise_specs(args.denoise),
     )
 
     # Create metadata with config
@@ -1837,6 +1941,7 @@ Examples:
         LevelRegionSelectStage("LevelRegionSelect"),
         LevelAdjustStage("LevelAdjust"),
         ToneAdjustStage("ToneAdjust"),
+        DenoiseStage("Denoise"),
     ]
 
     should_load_preset = False
