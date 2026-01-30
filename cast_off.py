@@ -26,6 +26,27 @@ font_thickness = 3
 font_scale = 1
 
 
+def fine_tune_config(metadata: Metadata, args):
+    """
+    Overwrite preset config.
+    """
+    list_attrs = ["level_black_point", "level_white_point"]
+    for attr in list_attrs:
+        assert hasattr(args, attr), "Should have attr after parse."
+        if getattr(args, attr) is not None:
+            for i, val in enumerate(args.attr):
+                if val is not None:
+                    getattr(metadata.config, attr)[i] = val
+                    print(f"Fine tune {attr} {getattr(metadata.config, attr)[i]} -> {val}.")
+
+    scalar_attrs = ["tone_black_point", "level_white_point"]
+    for attr in scalar_attrs:
+        assert hasattr(args, attr), "Should have attr after parse."
+        if getattr(args, attr) is not None:
+            setattr(metadata.config, attr, getattr(args, attr))
+            print(f"Fine tune {attr} {getattr(metadata.config, attr)} -> {getattr(args, attr)}.")
+
+
 def extract_region_pixels(
     image: np.ndarray,
     region: str = "border",
@@ -1788,24 +1809,7 @@ def parse_output_specs(input_path: str, output_spec: Optional[str]) -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Nikon RAW Film Mask Removal Tool",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Basic usage
-  python film_mask_removal.py input.NEF -o output.jpg
-
-  # Custom borders and clusters
-  python film_mask_removal.py input.NEF -o output.jpg \\
-      --border u0.03,d0.03,l0,r0 --wb-ix 4,0,1
-
-  # With visualization
-  python film_mask_removal.py input.NEF -o output.jpg --visualize --debug
-
-  # Custom processing pipeline
-  python film_mask_removal.py input.NEF -o output.jpg \\
-      --stages load,border,classify,wb_compute,wb_apply,invert,level,save
-        """,
+        description="RAW Film Mask Removal Tool",
     )
     parser.add_argument("input", help="Input RAW file path")
     parser.add_argument(
