@@ -1983,8 +1983,8 @@ def main():
         should_load_preset = True
         should_visualize = False
 
-    # # Fine tune after load preset.
-    # fine_tune_config(metadata, args)
+    # Fine tune after load preset.
+    fine_tune_config(metadata, args)
 
     # Add visualization stage if requested
     if should_visualize:
