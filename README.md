@@ -20,14 +20,14 @@ stages = [
 ]
 ```
 
-1. black/white point auto tone by threshold first
+1. black/white point auto tune by threshold first
 2. overwrite with specific black/white if --tone-white, --tone-black, --level-white-point is not None
 
 - [download a camera raw](https://forum.affinity.serif.com/index.php?/topic/129312-raw-dng-negative-film-scanned-from-plustek-optic-film/)
 
 <img width="889" height="602" alt="image" src="https://github.com/user-attachments/assets/b7f127ff-28b4-400a-b9a4-b69b07e19415" />
 
-  
+
 - run:
 
 ```bash
@@ -35,7 +35,7 @@ python cast_off.py ./RAW.dng --border u0.02 --level-pixel-threshold 0.0001  --wb
 ```
 
 - get vis like:
-  
+
 ![RAW_1769685698_vis](https://github.com/user-attachments/assets/d5d87478-97ca-4fdf-84b3-d12d6b88b4ba)
 
 - output:

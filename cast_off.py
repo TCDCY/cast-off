@@ -26,27 +26,6 @@ font_thickness = 3
 font_scale = 1
 
 
-def fine_tune_config(metadata: Metadata, args):
-    """
-    Overwrite preset config.
-    """
-    list_attrs = ["level_black_point", "level_white_point"]
-    for attr in list_attrs:
-        assert hasattr(args, attr), "Should have attr after parse."
-        if getattr(args, attr) is not None:
-            for i, val in enumerate(args.attr):
-                if val is not None:
-                    getattr(metadata.config, attr)[i] = val
-                    print(f"Fine tune {attr} {getattr(metadata.config, attr)[i]} -> {val}.")
-
-    scalar_attrs = ["tone_black_point", "level_white_point"]
-    for attr in scalar_attrs:
-        assert hasattr(args, attr), "Should have attr after parse."
-        if getattr(args, attr) is not None:
-            setattr(metadata.config, attr, getattr(args, attr))
-            print(f"Fine tune {attr} {getattr(metadata.config, attr)} -> {getattr(args, attr)}.")
-
-
 def extract_region_pixels(
     image: np.ndarray,
     region: str = "border",
@@ -482,8 +461,8 @@ class Preset:
     # WhiteBalanceApplyStage
     wb_gains: Optional[np.ndarray] = None
     # LevelAdjustStage
-    black_points: Optional[List[float]] = None
-    white_points: Optional[List[float]] = None
+    level_black_point: Optional[List[float]] = None
+    level_white_point: Optional[List[float]] = None
     # ToneAdjustStage
     tone_black_point: Optional[float] = None
     tone_white_point: Optional[float] = None
@@ -511,8 +490,8 @@ class State:
 
     # Computed values (for detection/visualization)
     wb_gains: Optional[np.ndarray] = None
-    black_points: Optional[List[float]] = None
-    white_points: Optional[List[float]] = None
+    level_black_point = [None, None, None]
+    level_white_point = [None, None, None]
     tone_black_point: Optional[float] = None
     tone_white_point: Optional[float] = None
 
@@ -630,8 +609,10 @@ class Metadata:
         for field in fields(self.preset):
             field_name = field.name
             field_value = getattr(self.preset, field_name)
+            if field_value is None:
+                continue
 
-            print(f"Loading {field_name}...")
+            print(f"set {field_name} to {field_value}")
             setattr(self.state, field_name, field_value)
 
 
@@ -1187,17 +1168,17 @@ class LevelAdjustStage(Stage):
             black_points.append(black_point)
             white_points.append(white_point)
 
-        metadata.state.black_points = black_points
-        metadata.state.white_points = white_points
+        metadata.state.level_black_point = black_points
+        metadata.state.level_white_point = white_points
         return metadata
 
     def track(self, metadata: Metadata):
-        metadata.preset.black_points = metadata.state.black_points
-        metadata.preset.white_points = metadata.state.white_points
+        metadata.preset.level_black_point = metadata.state.level_black_point
+        metadata.preset.level_white_point = metadata.state.level_white_point
 
     def _apply_impl(self, metadata: Metadata) -> Metadata:
-        black_points = metadata.state.black_points
-        white_points = metadata.state.white_points
+        black_points = metadata.state.level_black_point
+        white_points = metadata.state.level_white_point
         assert len(black_points) == 3, "Should be RGB."
 
         max_val = 65535.0
@@ -1748,6 +1729,9 @@ def parse_level_point(level_point_str: Optional[str], default=None) -> List[Opti
     if level_point_str is None:
         return [None, None, None]
 
+    if not any(c in level_point_str for c in "rgb"):
+        return [int(level_point_str), int(level_point_str), int(level_point_str)]
+
     # Default values for each channel
     level_point = {"r": default, "g": default, "b": default}
     # Parse RGB format: r0.001,g0.002,b0.003
@@ -1807,6 +1791,44 @@ def parse_output_specs(input_path: str, output_spec: Optional[str]) -> str:
     return output_path
 
 
+def fine_tune_config(metadata: Metadata, args):
+    """Overwrite preset config with command-line args.
+
+    Supports both list values (level_black_point) and scalar values (tone_black_point).
+    """
+    # List attributes (per-channel values)
+    list_attrs = ["level_black_point", "level_white_point"]
+    for attr in list_attrs:
+        arg_vals = getattr(args, attr, None)
+        if arg_vals is None:
+            continue
+
+        config_vals = getattr(metadata.state, attr)
+
+        # Handle list values
+        if isinstance(arg_vals, (list, tuple)):
+            for i, val in enumerate(arg_vals):
+                if val is not None and i < len(config_vals):
+                    old_val = config_vals[i]
+                    config_vals[i] = val
+                    print(f"Fine tune {attr}[{i}]: {old_val} -> {val}")
+        else:
+            # Broadcast single value to all channels
+            for i in range(len(config_vals)):
+                old_val = config_vals[i]
+                config_vals[i] = arg_vals
+                print(f"Fine tune {attr}[{i}]: {old_val} -> {arg_vals}")
+
+    # Scalar attributes (single values)
+    scalar_attrs = ["tone_black_point", "tone_white_point"]
+    for attr in scalar_attrs:
+        arg_val = getattr(args, attr, None)
+        if arg_val is not None:
+            old_val = getattr(metadata.state, attr)
+            setattr(metadata.state, attr, arg_val)
+            print(f"Fine tune {attr}: {old_val} -> {arg_val}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="RAW Film Mask Removal Tool",
@@ -1858,10 +1880,16 @@ def main():
         help="Center region ratio for level detection (0.0-1.0, default: 0.5)",
     )
     parser.add_argument(
-        "--tone-black", type=float, default=None, help="Tone adjustment black point (auto-detect if not specified)"
+        "--tone-black-point",
+        type=float,
+        default=None,
+        help="Tone adjustment black point (auto-detect if not specified)",
     )
     parser.add_argument(
-        "--tone-white", type=float, default=None, help="Tone adjustment white point (auto-detect if not specified)"
+        "--tone-white-point",
+        type=float,
+        default=None,
+        help="Tone adjustment white point (auto-detect if not specified)",
     )
     parser.add_argument(
         "--tone-gamma",
@@ -1923,8 +1951,8 @@ def main():
         white_level_region=args.white_level_region,
         center_rect_ratio=args.center_ratio,
         tone_region=args.tone_region,
-        tone_black_point=args.tone_black,
-        tone_white_point=args.tone_white,
+        tone_black_point=args.tone_black_point,
+        tone_white_point=args.tone_white_point,
         tone_gamma=args.tone_gamma,
         tone_pixel_threshold=args.tone_pixel_threshold,
         vis_path=vis_path,
@@ -1954,6 +1982,9 @@ def main():
         metadata.load(args.load_preset)
         should_load_preset = True
         should_visualize = False
+
+    # # Fine tune after load preset.
+    # fine_tune_config(metadata, args)
 
     # Add visualization stage if requested
     if should_visualize:
